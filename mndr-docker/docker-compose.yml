@@ -1,0 +1,94 @@
+
+services:
+  # ------------------------------------
+  # 1. Backend Quarkus
+  # ------------------------------------
+  backend:
+    build:
+      context: ../mndr-cn-backend-agent
+      dockerfile: src/main/docker/Dockerfile.jvm
+    container_name: mndr-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: America/Lima
+      N8N_URL: http://n8n:5678/webhook-test/chat-web
+      CORS_ORIGINS: http://localhost:5173,http://127.0.0.1:5173
+    networks:
+      - mndr-network
+    depends_on:
+      - n8n
+
+  # ------------------------------------
+  # 2. Frontend React
+  # ------------------------------------
+  frontend:
+    build:
+      context: ../mndr-cn-frontend-agent
+      dockerfile: Dockerfile
+    container_name: mndr-frontend
+    restart: unless-stopped
+    ports:
+      - "5173:80"
+    environment:
+      TZ: America/Lima
+    networks:
+      - mndr-network
+    depends_on:
+      - backend
+
+  # ------------------------------------
+  # 3. WAHA (WhatsApp HTTP API)
+  # ------------------------------------
+  waha:
+    image: devlikeapro/waha:latest
+    container_name: mndr-waha
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./waha-bot:/tmp
+      - ./waha-data:/app/.waha
+    environment:
+      WHATSAPP_DEFAULT_ENGINE: NOWEB
+      WHATSAPP_HOOK_EVENTS: message
+      WHATSAPP_HOOK_URL: http://n8n:5678/webhook/waha
+      TZ: America/Lima
+    networks:
+      - mndr-network
+    depends_on:
+      - n8n
+
+  # ------------------------------------
+  # 4. n8n Automation Engine
+  # ------------------------------------
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: mndr-n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      NODE_ENV: production
+      GENERIC_TIMEZONE: America/Lima
+      TZ: America/Lima
+      WEBHOOK_URL: http://localhost:5678/
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_BASIC_AUTH_ACTIVE: "true"
+      N8N_BASIC_AUTH_USER: admin
+      N8N_BASIC_AUTH_PASSWORD: admin123
+    volumes:
+      - ./n8n_data:/home/node/.n8n
+    networks:
+      - mndr-network
+
+# ------------------------------------
+# RED COMPARTIDA
+# ------------------------------------
+networks:
+  mndr-network:
+    driver: bridge

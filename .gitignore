@@ -1,0 +1,18 @@
+@'
+
+# Variables de entorno y credenciales
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Datos locales de n8n
+mndr-docker/n8n_data/
+
+# Dependencias y archivos generados
+node_modules/
+dist/
+target/
+'@ | Add-Content .gitignore

@@ -1,0 +1,2476 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mindora Care · Dashboard Ejecutivo de IA</title>
+
+<!--
+  ============================================================================
+  DASHBOARD EJECUTIVO DE IA — MINDORA CARE
+  ============================================================================
+  Archivo HTML autocontenido (HTML + CSS + JS). No requiere build ni
+  dependencias. Usa ÚNICAMENTE datos reales del backend GraphQL: no existe
+  modo de demostración ni datos ficticios en este archivo. (La copia de
+  demostración con datos ficticios vive en dashboard-ejecutivo-demo.html,
+  en este mismo directorio; ese archivo es solo una referencia de diseño y
+  no se modifica desde aquí.)
+
+  Backend real (no modificado por este archivo):
+    D:\Proyectos\n8n whatsapp\mndr-project\mndr-cn-backend-agent
+    Módulo:  src/main/java/io/mindoracare/aiusage
+    Recurso: .../infrastructure/controller/graphql/AiUsageGraphQLResource.java
+
+  Endpoint GraphQL real (según application-base.properties del backend):
+    quarkus.smallrye-graphql.root-path=/graphql  →  http://localhost:8080/graphql
+    (fijo en CONFIG.GRAPHQL_ENDPOINT al inicio del <script>; sin selector en la
+    interfaz, conexión automática al cargar la página)
+
+  Los 10 queries + 1 mutation existentes (no se inventan campos ni se crean
+  otros; verificados contra AiUsageGraphQLResource.java y las tablas reales
+  ai_usage / ai_model_pricing en Supabase):
+    GetAiUsageSummary(from, to, flow?)          -> AiUsageSummaryDto
+    GetTopAiUsageUsers(from, to, flow?)         -> [AiUsageUserDto]
+    GetAiUsageTimeseries(from, to, granularity, flow?) -> [AiUsageTimeseriesPointDto]
+    GetAiUsageByUser(from, to, flow, id)        -> AiUsageUserDto
+    GetAiUsageByModel(from, to, flow?)          -> [AiUsageModelStatsDto]
+    SearchAiUsageUsers(from, to, flow?, query)  -> [AiUsageUserMatchDto]
+    GetAiUsageFlowCosts(from, to, flow?)        -> [AiUsageFlowCostDto]   (nuevo)
+    GetAiUsageCallHistory(flow, id)             -> [AiUsageCallDto]       (nuevo, SIN from/to)
+    GetAiModelPricing()                         -> [AiModelPricingDto]    (nuevo)
+    UpdateAiModelPricing(model, inputPricePerMillion, outputPricePerMillion) -> AiModelPricingDto (mutation, nueva)
+
+  Campos reales de los DTO (verificados contra las clases Java reales, no
+  contra el schema inferido):
+    AiUsageSummaryDto: inputTokens, outputTokens, totalTokens, totalCalls,
+      activeUsers, averageInputTokensPerCall, averageOutputTokensPerCall,
+      averageLatencyMs, averageTokensPerUser, averageCallsPerUser
+    AiUsageUserDto: userId, flow, name, country, ip, inputTokens, outputTokens,
+      totalTokens, totalCalls, averageInputTokensPerCall,
+      averageOutputTokensPerCall, averageLatencyMs, costInputUsd, costOutputUsd,
+      costTotalUsd, hasMissingPricing
+    AiUsageTimeseriesPointDto: period, inputTokens, outputTokens, totalTokens,
+      totalCalls, averageLatencyMs
+    AiUsageModelStatsDto: model, totalCalls, inputTokens, outputTokens,
+      totalTokens, averageInputTokensPerCall, averageOutputTokensPerCall,
+      averageLatencyMs, costInputUsd, costOutputUsd, costTotalUsd, hasPricing
+    AiUsageUserMatchDto: userId, flow, name, country, ip (candidatos del
+      buscador de "Detalle de un usuario"; sin cifras de consumo)
+    AiUsageFlowCostDto: flow (null = fila TOTAL), totalCalls, inputTokens,
+      outputTokens, totalTokens, costInputUsd, costOutputUsd, costTotalUsd,
+      hasMissingPricing
+    AiUsageCallDto: id, model, inputTokens, outputTokens, totalTokens,
+      durationMs, createdAt, costInputUsd, costOutputUsd, costTotalUsd, hasPricing
+    AiModelPricingDto: model, inputPricePerMillion, outputPricePerMillion,
+      currency (siempre "USD"), updatedAt
+
+  CLIENT/PATIENT siguen siendo los valores técnicos reales que viajan en las
+  queries GraphQL (coinciden con el enum AiUsageFlow del backend); solo las
+  ETIQUETAS visibles en pantalla usan "Flujo Mindi" / "Flujo Post-terapia".
+
+  Convención de fechas del backend: "to" es el LÍMITE SUPERIOR EXCLUSIVO del
+  periodo (created_at >= from AND created_at < to). Este archivo respeta esa
+  convención: p. ej. para un rango personalizado que debe incluir todo el día
+  final, "to" se calcula como el día siguiente a las 00:00:00, no como el
+  mismo día a las 23:59:59. GetAiUsageCallHistory es la única excepción
+  deliberada: no recibe from/to porque el historial de un usuario siempre es
+  completo, sin importar ningún filtro, global o local (igual que en la demo).
+
+  ----------------------------------------------------------------------------
+  FILTROS GLOBALES vs. FILTROS LOCALES POR PANEL
+  ----------------------------------------------------------------------------
+  Los controles de "Filtros globales" (periodSelect/flowSelect/customFrom/
+  customTo) solo representan lo SELECCIONADO: cambiarlos no dispara ninguna
+  consulta. El botón "Actualizar datos" es lo único que los aplica: copia esos
+  valores a los controles LOCALES de cada panel (ids con prefijo por panel:
+  kpi*, ts*, flowCost*, topUsers*, model*, userDetail*) y dispara el refresco
+  de cada uno (ver syncPanelFilters() + el listener de refreshBtn).
+
+  Cada panel con filtros guarda su propio período/flujo (y, en el panel de
+  modelos, también modelo) directamente en SUS PROPIOS controles del DOM —
+  ese es, en sí mismo, el estado "aplicado" de ese panel; no hay un objeto de
+  estado paralelo para esto. Cambiar un filtro LOCAL solo refresca su panel
+  (ver wireLocalFilters()) y nunca modifica los controles globales ni los de
+  otro panel. El filtro de "Modelo" del panel "Consumo por modelo de IA" no
+  tiene equivalente global (no se sincroniza con "Actualizar datos").
+
+  El panel "Detalle de un usuario" es la única excepción parcial: su filtro
+  local de flujo no vuelve a re-consultar al usuario ya seleccionado (el flujo
+  de un usuario es parte de su identidad, fijado al seleccionarlo desde la
+  búsqueda) — en su lugar, controla qué candidatos trae una nueva búsqueda. Su
+  filtro de período SÍ refresca los indicadores agregados del usuario ya
+  seleccionado (sin tocar su historial de llamadas, que es siempre completo).
+
+  Los dos paneles "Comparación Flujo Mindi vs Flujo Post-terapia" y "Resumen
+  ejecutivo" se eliminaron de este dashboard (esa comparación puede verse
+  en el panel "Consumo y costos por flujo", que ya desglosa CLIENT/PATIENT y
+  un TOTAL).
+
+  ----------------------------------------------------------------------------
+  PROMEDIOS POR LLAMADA (paneles "Consumo por modelo de IA" y
+  "Consumo y costos por flujo")
+  ----------------------------------------------------------------------------
+  "Prom. tokens/llamada" y "Prom. costo/llamada" se calculan SIEMPRE a partir
+  de los totales reales de cada fila (tokens_totales/llamadas,
+  costo_total/llamadas) — nunca promediando promedios ya calculados por el
+  backend. Si no hubo llamadas, se muestra "Sin datos" en vez de dividir entre
+  cero. Si la fila mezcla algún modelo sin tarifa configurada en
+  ai_model_pricing (hasPricing=false / hasMissingPricing=true), el promedio de
+  COSTO se marca como "Tarifa incompleta" en vez de mostrar un promedio
+  engañoso (el promedio de TOKENS sí se muestra, porque no depende de la
+  tarifa). Ver formatAvgTokensPerCall()/formatAvgCostPerCall().
+
+  ----------------------------------------------------------------------------
+  COSTOS Y PRECIOS POR MODELO (reemplaza a los paneles de calculadora)
+  ----------------------------------------------------------------------------
+  Los precios de cada modelo viven ÚNICAMENTE en la tabla ai_model_pricing de
+  Supabase (columnas reales: model, input_price_per_million,
+  output_price_per_million, currency fija a 'USD', created_at, updated_at).
+  No hay localStorage para precios ni selector de moneda/tipo de cambio: todo
+  se muestra en USD, igual que exige la tabla (CHECK currency = 'USD').
+
+  Todos los costos que ves (panel de modelos, usuarios con mayor consumo,
+  consumo y costos por flujo, detalle de usuario) se calculan en el BACKEND
+  uniendo cada llamada de ai_usage con la fila de ai_model_pricing de SU
+  PROPIO modelo antes de sumar — nunca aplicando una tarifa única a tokens ya
+  agregados — así que siguen siendo correctos aunque un usuario o un flujo
+  mezclen varios modelos con precios distintos. Si un modelo no tiene fila en
+  ai_model_pricing, los campos "hasPricing"/"hasMissingPricing" vienen en
+  false/true para que esta página lo marque explícitamente como "sin tarifa
+  configurada" en vez de mostrar un costo de 0 como si fuera real.
+
+  El botón de engranaje para editar precios está DENTRO del panel "Consumo
+  por modelo de IA" (no en el encabezado general). Guardar llama a la
+  mutation UpdateAiModelPricing y vuelve a cargar los paneles de costo; no
+  existe una opción de "restaurar valores de fábrica" (no hay un valor de
+  fábrica seguro que inventar para cada modelo real) — en su lugar hay
+  "Recargar valor guardado", que solo vuelve a traer el precio ya persistido
+  en Supabase, sin sobrescribir nada.
+
+  Sin autorización propia en esta mutation: ver el comentario en
+  AiUsageGraphQLResource.java — es una limitación conocida, no se inventó un
+  sistema de autenticación paralelo solo para esta página.
+
+  ----------------------------------------------------------------------------
+  SI VES "Error de conexión" — diagnóstico:
+  ----------------------------------------------------------------------------
+  Poder abrir http://localhost:8080/graphql/schema.graphql escribiendo la URL
+  en la barra de direcciones NO prueba que fetch() desde esta página funcione:
+  esa es una navegación normal (no sujeta a CORS), mientras que fetch() desde
+  JavaScript sí lo está. Son dos cosas distintas.
+
+  Causa más probable #1 — abriste este archivo con doble clic (protocolo
+  file://): varios navegadores bloquean fetch() desde file:// hacia http://
+  independientemente de la configuración CORS del backend. Solución: sirve
+  este archivo por HTTP en vez de abrirlo como archivo local, por ejemplo:
+      python -m http.server 5500
+  (ejecútalo dentro de la carpeta mndr-cn-frontend-agent; no instala nada,
+  usa la librería estándar de Python) y abre
+      http://localhost:5500/dashboard-ejecutivo.html
+  Si usas tu editor, la extensión "Live Server" cumple la misma función.
+
+  Causa más probable #2 — CORS: si sirves esta página desde un origen http
+  que el backend no tiene autorizado, el navegador bloqueará la respuesta.
+  La configuración actual del backend (application.properties) autoriza:
+      quarkus.http.cors.origins=http://localhost:5173,http://localhost:5500,http://127.0.0.1:5500
+  Si sirves este HTML desde otro origen, agrégalo a esa misma lista
+  separada por comas. Esto NO se modifica desde este archivo ni desde esta
+  tarea: es una configuración que debes aplicar tú en el backend si lo
+  consideras.
+
+  No se introduce autenticación: el backend actual no exige credenciales en
+  estas consultas (ni en la nueva mutation de precios).
+  ============================================================================
+-->
+
+<style>
+  :root {
+    --navy: #0c2340;
+    --blue-dark: #103a63;
+    --blue: #1565c0;
+    --turquoise: #14b8a6;
+    --bg: #f4f6fa;
+    --card-bg: #ffffff;
+    --border: #e3e8ef;
+    --text: #182536;
+    --text-muted: #647089;
+    --text-faint: #8995ac;
+    --success: #16a34a;
+    --success-bg: #e8f7ee;
+    --danger: #dc2626;
+    --danger-bg: #fdecec;
+    --warning: #b45309;
+    --warning-bg: #fef3e2;
+    --info-bg: #eaf2fb;
+    --radius: 12px;
+    --shadow: 0 1px 2px rgba(15, 35, 64, 0.04), 0 4px 16px rgba(15, 35, 64, 0.05);
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  .shell {
+    max-width: 1320px;
+    margin: 0 auto;
+    padding: 20px 24px 56px;
+  }
+
+  /* ---------- Header ---------- */
+  header.topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 24px;
+    padding: 20px 24px;
+    background: linear-gradient(135deg, var(--navy), var(--blue-dark));
+    border-radius: var(--radius);
+    color: #ffffff;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+  }
+
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+
+  .brand-mark {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.12);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 16px;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+  }
+
+  .brand-text .org-name {
+    font-size: 12.5px;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    opacity: 0.75;
+    margin: 0 0 2px;
+  }
+
+  .brand-text h1 {
+    font-size: 21px;
+    margin: 0;
+    font-weight: 700;
+  }
+
+  .brand-text p.subtitle {
+    margin: 4px 0 0;
+    font-size: 13px;
+    opacity: 0.82;
+    max-width: 480px;
+  }
+
+  .topbar-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+    font-size: 12.5px;
+  }
+
+
+  .updated-at { opacity: 0.8; }
+
+  /* ---------- Panels / cards ---------- */
+  .panel {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 18px 20px;
+    margin-bottom: 20px;
+  }
+
+  .panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 14px;
+  }
+
+  .panel-header h2 {
+    font-size: 15.5px;
+    margin: 0;
+    color: var(--navy);
+    font-weight: 700;
+  }
+
+  .panel-header .panel-hint {
+    font-size: 12px;
+    color: var(--text-faint);
+  }
+
+  .panel-header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  /* ---------- Filters ---------- */
+  .filters {
+    display: flex;
+    gap: 14px;
+    align-items: flex-end;
+    flex-wrap: wrap;
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .field label {
+    font-size: 11.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-muted);
+  }
+
+  select, input[type="date"], input[type="text"], input[type="number"] {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    font-size: 13.5px;
+    background: #fff;
+    color: var(--text);
+    min-width: 150px;
+  }
+  select:focus, input:focus { outline: 2px solid rgba(21, 101, 192, 0.25); border-color: var(--blue); }
+  input[type="number"] { min-width: 0; width: 100%; }
+
+  .btn {
+    border: none;
+    border-radius: 8px;
+    padding: 9px 16px;
+    font-size: 13.5px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+  }
+  .btn-primary { background: var(--blue); color: #fff; }
+  .btn-primary:hover { background: #10539e; }
+  .btn-secondary { background: var(--info-bg); color: var(--blue); }
+  .btn-secondary:hover { background: #dde9fa; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  .icon-btn {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--info-bg);
+    color: var(--blue);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background 0.15s;
+    flex-shrink: 0;
+  }
+  .icon-btn:hover { background: #dde9fa; }
+
+  /* ---------- KPI cards ---------- */
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 14px;
+  }
+
+  .kpi-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    padding: 16px 16px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    min-height: 108px;
+  }
+
+  .kpi-icon {
+    width: 30px;
+    height: 30px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--info-bg);
+    color: var(--blue);
+  }
+  .kpi-card.accent-turquoise .kpi-icon { background: #e4f8f5; color: var(--turquoise); }
+
+  .kpi-label {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+  }
+
+  .kpi-value {
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--navy);
+    line-height: 1.1;
+  }
+  .kpi-value.muted { color: var(--text-faint); font-size: 16px; font-weight: 600; }
+
+  .kpi-sub { font-size: 11.5px; color: var(--text-faint); }
+
+  /* ---------- Chart ---------- */
+  .chart-wrap { position: relative; }
+  .chart-legend {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+  /* ---------- Tables ---------- */
+  .table-scroll { width: 100%; overflow-x: auto; }
+  table.exec-table { width: 100%; border-collapse: collapse; font-size: 13px; min-width: 640px; }
+  table.exec-table th {
+    text-align: left;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text-muted);
+    border-bottom: 2px solid var(--border);
+    padding: 9px 10px;
+    white-space: nowrap;
+  }
+  table.exec-table td {
+    padding: 10px 10px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+  }
+  table.exec-table tfoot td {
+    border-top: 2px solid var(--border);
+    border-bottom: none;
+    font-weight: 700;
+  }
+  table.exec-table tbody tr:hover { background: #fafbfd; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  th.num { text-align: right; }
+
+  .pill {
+    display: inline-block;
+    padding: 2px 9px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .pill.client { background: var(--info-bg); color: var(--blue); }
+  .pill.patient { background: #e4f8f5; color: #0f8e7f; }
+  .pill.total { background: #eef1f6; color: var(--navy); }
+
+  .badge-missing-pricing {
+    display: inline-block;
+    font-size: 10.5px;
+    font-weight: 700;
+    color: var(--warning);
+    background: var(--warning-bg);
+    padding: 1px 7px;
+    border-radius: 999px;
+    margin-left: 6px;
+    white-space: nowrap;
+  }
+
+  .id-truncate {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--text-muted);
+    cursor: help;
+  }
+
+  /* ---------- User detail ---------- */
+  .lookup-form { display: flex; gap: 12px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 16px; }
+  .user-detail-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+  }
+  @media (max-width: 900px) { .user-detail-grid { grid-template-columns: repeat(2, 1fr); } }
+
+  .search-results-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
+  .search-result-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    text-align: left;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 9px 12px;
+    background: #fff;
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text);
+  }
+  .search-result-row:hover { background: #fafbfd; border-color: var(--blue); }
+  .search-result-name { font-weight: 600; }
+  .search-result-meta { color: var(--text-muted); font-size: 12px; }
+
+  .user-detail-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-bottom: 14px;
+  }
+  .user-detail-header strong { color: var(--navy); font-size: 14.5px; }
+
+  /* ---------- Empty / error / loading states ---------- */
+  .state-box {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 6px;
+    padding: 30px 12px;
+    color: var(--text-faint);
+    font-size: 13px;
+  }
+  .state-box.error { color: var(--danger); }
+  .state-box strong { color: inherit; font-size: 13.5px; }
+
+  .error-banner {
+    display: none;
+    background: var(--danger-bg);
+    border: 1px solid #f3c6c6;
+    color: var(--danger);
+    border-radius: var(--radius);
+    padding: 12px 16px;
+    font-size: 13px;
+    margin-bottom: 18px;
+    white-space: pre-wrap;
+  }
+  .error-banner.visible { display: block; }
+
+  .small-note { font-size: 12px; color: var(--text-faint); margin: 8px 0 12px; line-height: 1.5; }
+
+  .pagination-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+    font-size: 12.5px;
+    color: var(--text-muted);
+  }
+  .pagination-bar .btn { padding: 6px 12px; font-size: 12.5px; }
+
+  footer.note {
+    text-align: center;
+    color: var(--text-faint);
+    font-size: 11.5px;
+    margin-top: 10px;
+  }
+
+  /* ---------- Config modal (precios por modelo) ---------- */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(12, 35, 64, 0.45);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 50;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal {
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    max-width: 440px;
+    width: 100%;
+    padding: 22px 24px;
+    max-height: 90vh;
+    overflow-y: auto;
+  }
+  .modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .modal-header h3 { margin: 0; font-size: 16px; color: var(--navy); }
+  .modal-close {
+    border: none; background: none; cursor: pointer; color: var(--text-faint);
+    font-size: 20px; line-height: 1; padding: 2px 6px;
+  }
+  .modal-close:hover { color: var(--text); }
+  .modal-subtitle { font-size: 12px; color: var(--text-faint); margin: 0 0 16px; }
+  .modal-field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 4px; }
+  @media (max-width: 480px) { .modal-field-grid { grid-template-columns: 1fr; } }
+  .modal-footer { display: flex; justify-content: space-between; gap: 10px; margin-top: 20px; flex-wrap: wrap; }
+  .modal-footer .right-group { display: flex; gap: 10px; }
+  .modal-message { font-size: 13px; margin-top: 14px; padding: 8px 10px; border-radius: 8px; display: none; }
+  .modal-message.visible { display: block; }
+  .modal-message.success { background: var(--success-bg); color: var(--success); }
+  .modal-message.error { background: var(--danger-bg); color: var(--danger); }
+</style>
+</head>
+<body>
+<div class="shell">
+
+  <!-- ================= HEADER ================= -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">MC</div>
+      <div class="brand-text">
+        <p class="org-name">Mindora Care</p>
+        <h1>Dashboard Ejecutivo de IA</h1>
+        <p class="subtitle">Monitorización de consumo, rendimiento y actividad de inteligencia artificial</p>
+      </div>
+    </div>
+    <div class="topbar-meta">
+      <span class="updated-at">Última actualización: <strong id="lastUpdated">—</strong></span>
+    </div>
+  </header>
+
+  <div class="error-banner" id="globalErrorBanner"></div>
+
+  <!-- ================= GLOBAL FILTERS ================= -->
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Filtros globales</h2>
+      <span class="panel-hint">Selecciona período y flujo, luego presiona «Actualizar datos» para aplicarlos a todos los paneles. Cada panel también tiene sus propios filtros, que puedes cambiar sin afectar a los demás.</span>
+    </div>
+    <div class="filters">
+      <div class="field">
+        <label for="periodSelect">Período</label>
+        <select id="periodSelect">
+          <option value="24h">Últimas 24 horas</option>
+          <option value="7d" selected>Últimos 7 días</option>
+          <option value="30d">Últimos 30 días</option>
+          <option value="custom">Rango personalizado</option>
+        </select>
+      </div>
+      <div class="field" id="customFromField" style="display:none;">
+        <label for="customFrom">Desde</label>
+        <input type="date" id="customFrom" />
+      </div>
+      <div class="field" id="customToField" style="display:none;">
+        <label for="customTo">Hasta (incluido)</label>
+        <input type="date" id="customTo" />
+      </div>
+      <div class="field">
+        <label for="flowSelect">Flujo</label>
+        <select id="flowSelect">
+          <option value="">Todos (Flujo Mindi + Flujo Post-terapia)</option>
+          <option value="CLIENT">Flujo Mindi</option>
+          <option value="PATIENT">Flujo Post-terapia</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>&nbsp;</label>
+        <button class="btn btn-primary" id="refreshBtn" type="button">Actualizar datos</button>
+      </div>
+      <div class="field">
+        <label>&nbsp;</label>
+        <button class="icon-btn" id="globalReloadBtn" type="button" title="Recargar todos los paneles con sus filtros actuales (sin cambiar ningún filtro)" aria-label="Recargar todos los paneles">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= KPI CARDS ================= -->
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Indicadores ejecutivos</h2>
+      <div class="panel-header-right">
+        <span class="panel-hint" id="kpiPeriodHint">—</span>
+        <button class="icon-btn" id="kpiRefreshBtn" type="button" title="Actualizar este panel" aria-label="Actualizar indicadores ejecutivos">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="filters" style="margin-bottom: 14px;">
+      <div class="field">
+        <label for="kpiPeriodSelect">Período</label>
+        <select id="kpiPeriodSelect">
+          <option value="24h">Últimas 24 horas</option>
+          <option value="7d" selected>Últimos 7 días</option>
+          <option value="30d">Últimos 30 días</option>
+          <option value="custom">Rango personalizado</option>
+        </select>
+      </div>
+      <div class="field" id="kpiCustomFromField" style="display:none;">
+        <label for="kpiCustomFrom">Desde</label>
+        <input type="date" id="kpiCustomFrom" />
+      </div>
+      <div class="field" id="kpiCustomToField" style="display:none;">
+        <label for="kpiCustomTo">Hasta (incluido)</label>
+        <input type="date" id="kpiCustomTo" />
+      </div>
+      <div class="field">
+        <label for="kpiFlowSelect">Flujo</label>
+        <select id="kpiFlowSelect">
+          <option value="">Todos</option>
+          <option value="CLIENT">Flujo Mindi</option>
+          <option value="PATIENT">Flujo Post-terapia</option>
+        </select>
+      </div>
+    </div>
+    <div class="kpi-grid" id="kpiGrid"></div>
+  </section>
+
+  <!-- ================= TIMESERIES ================= -->
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Evolución del consumo de tokens</h2>
+      <div class="panel-header-right">
+        <span class="panel-hint" id="timeseriesHint">—</span>
+        <button class="icon-btn" id="tsRefreshBtn" type="button" title="Actualizar este panel" aria-label="Actualizar evolución del consumo">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="filters" style="margin-bottom: 14px;">
+      <div class="field">
+        <label for="tsPeriodSelect">Período</label>
+        <select id="tsPeriodSelect">
+          <option value="24h">Últimas 24 horas</option>
+          <option value="7d" selected>Últimos 7 días</option>
+          <option value="30d">Últimos 30 días</option>
+          <option value="custom">Rango personalizado</option>
+        </select>
+      </div>
+      <div class="field" id="tsCustomFromField" style="display:none;">
+        <label for="tsCustomFrom">Desde</label>
+        <input type="date" id="tsCustomFrom" />
+      </div>
+      <div class="field" id="tsCustomToField" style="display:none;">
+        <label for="tsCustomTo">Hasta (incluido)</label>
+        <input type="date" id="tsCustomTo" />
+      </div>
+      <div class="field">
+        <label for="tsFlowSelect">Flujo</label>
+        <select id="tsFlowSelect">
+          <option value="">Todos</option>
+          <option value="CLIENT">Flujo Mindi</option>
+          <option value="PATIENT">Flujo Post-terapia</option>
+        </select>
+      </div>
+    </div>
+    <div class="chart-wrap" id="chartWrap">
+      <div class="state-box">Cargando…</div>
+    </div>
+    <div class="chart-legend" id="chartLegend"></div>
+  </section>
+
+  <!-- ================= FLOW COST BREAKDOWN ================= -->
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Consumo y costos por flujo</h2>
+      <div class="panel-header-right">
+        <span class="panel-hint">Consulta las llamadas, el consumo de tokens y los costos de cada flujo.</span>
+        <button class="icon-btn" id="flowCostRefreshBtn" type="button" title="Actualizar este panel" aria-label="Actualizar consumo y costos por flujo">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="filters" style="margin-bottom: 14px;">
+      <div class="field">
+        <label for="flowCostPeriodSelect">Período</label>
+        <select id="flowCostPeriodSelect">
+          <option value="24h">Últimas 24 horas</option>
+          <option value="7d" selected>Últimos 7 días</option>
+          <option value="30d">Últimos 30 días</option>
+          <option value="custom">Rango personalizado</option>
+        </select>
+      </div>
+      <div class="field" id="flowCostCustomFromField" style="display:none;">
+        <label for="flowCostCustomFrom">Desde</label>
+        <input type="date" id="flowCostCustomFrom" />
+      </div>
+      <div class="field" id="flowCostCustomToField" style="display:none;">
+        <label for="flowCostCustomTo">Hasta (incluido)</label>
+        <input type="date" id="flowCostCustomTo" />
+      </div>
+      <div class="field">
+        <label for="flowCostFlowFilter">Flujo</label>
+        <select id="flowCostFlowFilter">
+          <option value="">Todos</option>
+          <option value="CLIENT">Flujo Mindi</option>
+          <option value="PATIENT">Flujo Post-terapia</option>
+        </select>
+      </div>
+    </div>
+    <div id="flowCostContainer">
+      <div class="state-box">Cargando…</div>
+    </div>
+  </section>
+
+  <!-- ================= TOP USERS ================= -->
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Usuarios con mayor consumo</h2>
+      <div class="panel-header-right">
+        <span class="panel-hint">Los 10 usuarios con mayor consumo de IA.</span>
+        <button class="icon-btn" id="topUsersRefreshBtn" type="button" title="Actualizar este panel" aria-label="Actualizar usuarios con mayor consumo">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="filters" style="margin-bottom: 14px;">
+      <div class="field">
+        <label for="topUsersPeriodSelect">Período</label>
+        <select id="topUsersPeriodSelect">
+          <option value="24h">Últimas 24 horas</option>
+          <option value="7d" selected>Últimos 7 días</option>
+          <option value="30d">Últimos 30 días</option>
+          <option value="custom">Rango personalizado</option>
+        </select>
+      </div>
+      <div class="field" id="topUsersCustomFromField" style="display:none;">
+        <label for="topUsersCustomFrom">Desde</label>
+        <input type="date" id="topUsersCustomFrom" />
+      </div>
+      <div class="field" id="topUsersCustomToField" style="display:none;">
+        <label for="topUsersCustomTo">Hasta (incluido)</label>
+        <input type="date" id="topUsersCustomTo" />
+      </div>
+      <div class="field">
+        <label for="topUsersFlowSelect">Flujo</label>
+        <select id="topUsersFlowSelect">
+          <option value="">Todos</option>
+          <option value="CLIENT">Flujo Mindi</option>
+          <option value="PATIENT">Flujo Post-terapia</option>
+        </select>
+      </div>
+    </div>
+    <div id="topUsersContainer">
+      <div class="state-box">Cargando…</div>
+    </div>
+  </section>
+
+  <!-- ================= MODEL BREAKDOWN ================= -->
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Consumo por modelo de IA</h2>
+      <div class="panel-header-right">
+        <span class="panel-hint">Consulta el consumo de tokens y los costos de cada modelo de inteligencia artificial.</span>
+        <button class="icon-btn" id="modelRefreshBtn" type="button" title="Actualizar este panel" aria-label="Actualizar consumo por modelo de IA">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+        </button>
+        <button class="icon-btn" id="modelPricingGearBtn" type="button" title="Configurar precios por modelo" aria-label="Configurar precios por modelo">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="filters" style="margin-bottom: 14px;">
+      <div class="field">
+        <label for="modelPeriodSelect">Período</label>
+        <select id="modelPeriodSelect">
+          <option value="24h">Últimas 24 horas</option>
+          <option value="7d" selected>Últimos 7 días</option>
+          <option value="30d">Últimos 30 días</option>
+          <option value="custom">Rango personalizado</option>
+        </select>
+      </div>
+      <div class="field" id="modelCustomFromField" style="display:none;">
+        <label for="modelCustomFrom">Desde</label>
+        <input type="date" id="modelCustomFrom" />
+      </div>
+      <div class="field" id="modelCustomToField" style="display:none;">
+        <label for="modelCustomTo">Hasta (incluido)</label>
+        <input type="date" id="modelCustomTo" />
+      </div>
+      <div class="field">
+        <label for="modelFlowFilter">Flujo</label>
+        <select id="modelFlowFilter">
+          <option value="">Todos</option>
+          <option value="CLIENT">Flujo Mindi</option>
+          <option value="PATIENT">Flujo Post-terapia</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="modelModelFilter">Modelo</label>
+        <select id="modelModelFilter">
+          <option value="">Todos</option>
+        </select>
+      </div>
+    </div>
+    <div id="modelStatsContainer">
+      <div class="state-box">Cargando…</div>
+    </div>
+  </section>
+
+  <!-- ================= USER DETAIL ================= -->
+  <section class="panel">
+    <div class="panel-header">
+      <h2>Detalle de un usuario</h2>
+      <div class="panel-header-right">
+        <span class="panel-hint">Busca un usuario para ver su actividad, sus costos y el historial de llamadas. La búsqueda y la identidad del usuario no dependen de ningún período; el período solo se aplica al historial y a los indicadores de abajo.</span>
+        <button class="icon-btn" id="userDetailRefreshBtn" type="button" title="Actualizar este panel" aria-label="Actualizar detalle de usuario">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 4v6h-6"/><path d="M1 20v-6h6"/>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <div class="filters" style="margin-bottom: 14px;">
+      <div class="field">
+        <label for="userDetailFlowSelect">Flujo (para la búsqueda)</label>
+        <select id="userDetailFlowSelect">
+          <option value="">Todos</option>
+          <option value="CLIENT">Flujo Mindi</option>
+          <option value="PATIENT">Flujo Post-terapia</option>
+        </select>
+      </div>
+    </div>
+    <div class="lookup-form">
+      <div class="field" style="flex: 1 1 380px;">
+        <label for="searchQuery">Buscar por UUID, nombre, IP o país</label>
+        <input type="text" id="searchQuery" placeholder="Ej: Juan, 203.0.113.10, PE o un UUID" autocomplete="off" />
+      </div>
+    </div>
+    <div id="userSearchResults"></div>
+    <div id="userDetailContainer">
+      <div class="state-box">Busca un usuario arriba para ver su detalle.</div>
+    </div>
+  </section>
+
+  <footer class="note">
+    Mindora Care · Dashboard Ejecutivo de IA — datos reales vía GraphQL (endpoint configurado en el propio archivo).
+  </footer>
+</div>
+
+<!-- ================= PRICING MODAL ================= -->
+<div class="modal-overlay" id="pricingModalOverlay">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="pricingModalTitle">
+    <div class="modal-header">
+      <h3 id="pricingModalTitle">Precios por modelo de IA</h3>
+      <button class="modal-close" id="pricingCloseBtn" type="button" aria-label="Cerrar">&times;</button>
+    </div>
+    <p class="modal-subtitle">Los precios se guardan en la tabla ai_model_pricing de Supabase (vía backend), en USD por 1 millón de tokens.</p>
+
+    <div class="modal-field-grid">
+      <div class="field" style="grid-column: 1 / -1;">
+        <label for="pricingModelSelect">Modelo de IA</label>
+        <select id="pricingModelSelect"></select>
+      </div>
+      <div class="field">
+        <label for="pricingInputPrice">Precio entrada / 1M tokens (USD)</label>
+        <input type="number" id="pricingInputPrice" min="0" step="any" />
+      </div>
+      <div class="field">
+        <label for="pricingOutputPrice">Precio salida / 1M tokens (USD)</label>
+        <input type="number" id="pricingOutputPrice" min="0" step="any" />
+      </div>
+    </div>
+
+    <div id="pricingModalMessage" class="modal-message"></div>
+
+    <div class="modal-footer">
+      <button class="btn btn-secondary" id="pricingReloadBtn" type="button">Recargar valor guardado</button>
+      <div class="right-group">
+        <button class="btn btn-secondary" id="pricingCancelBtn" type="button">Cancelar</button>
+        <button class="btn btn-primary" id="pricingSaveBtn" type="button">Guardar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================================
+ * CONFIGURACIÓN
+ * ========================================================================== */
+const CONFIG = {
+  // Editable desde la interfaz (campo "Endpoint GraphQL") o aquí directamente.
+  GRAPHQL_ENDPOINT: 'http://localhost:8080/graphql',
+  REQUEST_TIMEOUT_MS: 12000,
+};
+
+/*
+ * Cada panel lee y guarda su propio filtro (período/flujo/modelo) directamente en SUS PROPIOS
+ * controles del DOM (ids con prefijo por panel: kpi*, ts*, flowCost*, topUsers*, model*,
+ * userDetail*) — eso es, en sí mismo, el estado "aplicado" de cada panel. Los controles de
+ * "Filtros globales" (periodSelect/flowSelect/customFrom/customTo) son solo lo "seleccionado":
+ * no disparan ninguna consulta por sí mismos y solo se copian a los controles de cada panel
+ * (y disparan su refresco) cuando se presiona «Actualizar datos» (ver syncPanelFilters()).
+ */
+const state = {
+  apiConnected: null, // null = no probado aún, true/false tras el último intento
+  lastModelStats: [],   // último resultado de GetAiUsageByModel para este panel, antes de filtrar por modelo
+  pricingList: [],       // último resultado de GetAiModelPricing (cache en memoria, se recarga al abrir el modal)
+  selectedUser: null,    // { flow, id } del usuario actualmente mostrado en "Detalle de un usuario"
+  historyPage: 0,        // página actual (0-indexada) del historial de llamadas del usuario seleccionado
+  lastTimeseriesPoints: null,     // para redibujar el gráfico en resize sin volver a pedir datos
+  lastTimeseriesGranularity: null,
+};
+
+/* ============================================================================
+ * UTILIDADES DE FORMATO
+ * ========================================================================== */
+function toNum(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
+function formatInt(value) {
+  const n = toNum(value);
+  if (n === null) return 'Sin datos';
+  return new Intl.NumberFormat('es-PE').format(Math.round(n));
+}
+
+function formatDecimal(value, decimals = 1) {
+  const n = toNum(value);
+  if (n === null) return 'Sin datos';
+  return new Intl.NumberFormat('es-PE', { maximumFractionDigits: decimals, minimumFractionDigits: 0 }).format(n);
+}
+
+function formatMs(value) {
+  const n = toNum(value);
+  if (n === null) return 'Sin datos';
+  if (n >= 1000) return (n / 1000).toFixed(2) + ' s';
+  return Math.round(n) + ' ms';
+}
+
+/**
+ * Formatea un importe en USD con suficientes decimales para que un valor
+ * pequeño pero distinto de cero no se muestre como $0.00.
+ */
+function formatCost(value) {
+  const n = toNum(value);
+  if (n === null) return '$ —';
+  if (n === 0) return '$ 0.00';
+  const abs = Math.abs(n);
+  const decimals = abs < 1 ? Math.min(8, Math.max(2, Math.ceil(-Math.log10(abs)) + 2)) : 2;
+  return '$ ' + n.toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+
+function missingPricingBadge(hasMissing) {
+  return hasMissing ? '<span class="badge-missing-pricing" title="Al menos un modelo de este grupo no tiene tarifa configurada en ai_model_pricing: el costo mostrado está incompleto, no es un costo real de cero.">Tarifa incompleta</span>' : '';
+}
+
+/**
+ * Promedio de tokens por llamada, calculado SIEMPRE a partir de los totales reales (nunca
+ * promediando promedios ya calculados). "Sin datos" si no hubo llamadas, para no dividir entre 0.
+ */
+function formatAvgTokensPerCall(totalTokens, totalCalls) {
+  const calls = toNum(totalCalls) || 0;
+  if (calls <= 0) return 'Sin datos';
+  return formatDecimal((toNum(totalTokens) || 0) / calls, 1);
+}
+
+/**
+ * Promedio de costo por llamada, calculado SIEMPRE a partir del costo total real / llamadas
+ * (nunca promediando promedios). Si el grupo tiene algún modelo sin tarifa configurada, se
+ * indica explícitamente en vez de mostrar un promedio de costo engañoso.
+ */
+function formatAvgCostPerCall(totalCostUsd, totalCalls, pricingIncomplete) {
+  const calls = toNum(totalCalls) || 0;
+  if (calls <= 0) return 'Sin datos';
+  if (pricingIncomplete) return '<span class="badge-missing-pricing" title="Al menos un modelo no tiene tarifa configurada: el promedio de costo sería engañoso.">Tarifa incompleta</span>';
+  return formatCost((toNum(totalCostUsd) || 0) / calls);
+}
+
+function formatDateTimeLocal(isoString) {
+  if (!isoString) return '—';
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return '—';
+  return d.toLocaleString('es-PE', { dateStyle: 'medium', timeStyle: 'short' });
+}
+
+function formatDateShort(isoString, granularity) {
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return '';
+  if (granularity === 'HOUR') return d.toLocaleString('es-PE', { day: '2-digit', month: '2-digit', hour: '2-digit' });
+  return d.toLocaleDateString('es-PE', { day: '2-digit', month: 'short' });
+}
+
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+function truncateId(id, visible = 8) {
+  if (!id) return '—';
+  if (id.length <= visible * 2 + 3) return id;
+  return id.slice(0, visible) + '…' + id.slice(-visible);
+}
+
+/**
+ * CLIENT/PATIENT son los valores técnicos reales que viajan en las queries
+ * GraphQL (coinciden con el enum AiUsageFlow del backend); estas etiquetas
+ * son solo para mostrar en pantalla.
+ */
+const FLOW_LABELS = { CLIENT: 'Flujo Mindi', PATIENT: 'Flujo Post-terapia' };
+
+function flowLabel(flow) {
+  return FLOW_LABELS[flow] || flow || '—';
+}
+
+function flowPillHtml(flow) {
+  if (!flow) return '<span class="pill total">TOTAL</span>';
+  const cls = flow === 'CLIENT' ? 'client' : 'patient';
+  return `<span class="pill ${cls}">${escapeHtml(flowLabel(flow))}</span>`;
+}
+
+/* ============================================================================
+ * RANGO DE FECHAS Y GRANULARIDAD
+ * El backend trata "to" como límite superior EXCLUSIVO: created_at >= from
+ * AND created_at < to. Por eso, para un rango que debe incluir todo un día,
+ * "to" se calcula como el día siguiente a las 00:00:00.
+ * ========================================================================== */
+function computeRange(period, fromInputId, toInputId) {
+  const now = new Date();
+  if (period === '24h') {
+    const from = new Date(now.getTime() - 24 * 3600 * 1000);
+    return { from: from.toISOString(), to: now.toISOString(), granularity: 'HOUR' };
+  }
+  if (period === '7d') {
+    const from = new Date(now.getTime() - 7 * 24 * 3600 * 1000);
+    return { from: from.toISOString(), to: now.toISOString(), granularity: 'DAY' };
+  }
+  if (period === '30d') {
+    const from = new Date(now.getTime() - 30 * 24 * 3600 * 1000);
+    return { from: from.toISOString(), to: now.toISOString(), granularity: 'DAY' };
+  }
+  // custom
+  const fromInput = document.getElementById(fromInputId || 'customFrom').value;
+  const toInput = document.getElementById(toInputId || 'customTo').value;
+  if (!fromInput || !toInput) return null;
+  const from = new Date(fromInput + 'T00:00:00');
+  // "Hasta" es inclusivo en la UI: se traduce al día SIGUIENTE a las 00:00:00
+  // para respetar el límite superior exclusivo del backend.
+  const toInclusiveDay = new Date(toInput + 'T00:00:00');
+  const to = new Date(toInclusiveDay.getTime() + 24 * 3600 * 1000);
+  const spanDays = (to - from) / (24 * 3600 * 1000);
+  let granularity = 'DAY';
+  if (spanDays <= 2) granularity = 'HOUR';
+  else if (spanDays > 90 && spanDays <= 400) granularity = 'WEEK';
+  else if (spanDays > 400) granularity = 'MONTH';
+  return { from: from.toISOString(), to: to.toISOString(), granularity };
+}
+
+/* ============================================================================
+ * CLIENTE GRAPHQL — único origen de datos (sin modo demostración)
+ * ========================================================================== */
+const QUERIES = {
+  summary: `query($from: DateTime, $to: DateTime, $flow: AiUsageFlow) {
+    GetAiUsageSummary(from: $from, to: $to, flow: $flow) {
+      inputTokens outputTokens totalTokens totalCalls activeUsers
+      averageInputTokensPerCall averageOutputTokensPerCall averageLatencyMs
+      averageTokensPerUser averageCallsPerUser
+    }
+  }`,
+  topUsers: `query($from: DateTime, $to: DateTime, $flow: AiUsageFlow) {
+    GetTopAiUsageUsers(from: $from, to: $to, flow: $flow) {
+      userId flow name country ip inputTokens outputTokens totalTokens totalCalls
+      averageInputTokensPerCall averageOutputTokensPerCall averageLatencyMs
+      costInputUsd costOutputUsd costTotalUsd hasMissingPricing
+    }
+  }`,
+  timeseries: `query($from: DateTime, $to: DateTime, $granularity: AiUsageGranularity, $flow: AiUsageFlow) {
+    GetAiUsageTimeseries(from: $from, to: $to, granularity: $granularity, flow: $flow) {
+      period inputTokens outputTokens totalTokens totalCalls averageLatencyMs
+    }
+  }`,
+  byUser: `query($from: DateTime, $to: DateTime, $flow: AiUsageFlow, $id: String) {
+    GetAiUsageByUser(from: $from, to: $to, flow: $flow, id: $id) {
+      userId flow name country ip inputTokens outputTokens totalTokens totalCalls
+      averageInputTokensPerCall averageOutputTokensPerCall averageLatencyMs
+      costInputUsd costOutputUsd costTotalUsd hasMissingPricing
+    }
+  }`,
+  byModel: `query($from: DateTime, $to: DateTime, $flow: AiUsageFlow) {
+    GetAiUsageByModel(from: $from, to: $to, flow: $flow) {
+      model totalCalls inputTokens outputTokens totalTokens
+      averageInputTokensPerCall averageOutputTokensPerCall averageLatencyMs
+      costInputUsd costOutputUsd costTotalUsd hasPricing
+    }
+  }`,
+  searchUsers: `query($from: DateTime, $to: DateTime, $flow: AiUsageFlow, $query: String) {
+    SearchAiUsageUsers(from: $from, to: $to, flow: $flow, query: $query) {
+      userId flow name country ip
+    }
+  }`,
+  flowCosts: `query($from: DateTime, $to: DateTime, $flow: AiUsageFlow) {
+    GetAiUsageFlowCosts(from: $from, to: $to, flow: $flow) {
+      flow totalCalls inputTokens outputTokens totalTokens
+      costInputUsd costOutputUsd costTotalUsd hasMissingPricing
+    }
+  }`,
+  callHistory: `query($flow: AiUsageFlow, $id: String, $from: DateTime, $to: DateTime, $limit: Int, $offset: Int) {
+    GetAiUsageCallHistory(flow: $flow, id: $id, from: $from, to: $to, limit: $limit, offset: $offset) {
+      totalCount
+      calls {
+        id model inputTokens outputTokens totalTokens durationMs createdAt
+        costInputUsd costOutputUsd costTotalUsd hasPricing
+      }
+    }
+  }`,
+  modelPricing: `query {
+    GetAiModelPricing {
+      model inputPricePerMillion outputPricePerMillion currency updatedAt
+    }
+  }`,
+  updateModelPricing: `mutation($model: String, $inputPricePerMillion: BigDecimal, $outputPricePerMillion: BigDecimal) {
+    UpdateAiModelPricing(model: $model, inputPricePerMillion: $inputPricePerMillion, outputPricePerMillion: $outputPricePerMillion) {
+      model inputPricePerMillion outputPricePerMillion currency updatedAt
+    }
+  }`,
+};
+
+function currentEndpoint() {
+  return CONFIG.GRAPHQL_ENDPOINT;
+}
+
+/**
+ * Ejecuta una query/mutation GraphQL real. No oculta el error original de
+ * fetch(): lo incluye siempre en el mensaje final, añadiendo contexto para
+ * distinguir timeout, bloqueo de red/CORS (indistinguibles para JS por
+ * diseño del navegador), error HTTP y error GraphQL.
+ */
+async function executeGraphQL(query, variables) {
+  const endpoint = currentEndpoint();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), CONFIG.REQUEST_TIMEOUT_MS);
+
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      mode: 'cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, variables }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeoutId);
+    if (err.name === 'AbortError') {
+      throw new Error('Tiempo de espera agotado (' + CONFIG.REQUEST_TIMEOUT_MS + ' ms) esperando respuesta de ' + endpoint + '.');
+    }
+    // fetch() lanza el mismo TypeError genérico tanto para fallos de red reales
+    // como para bloqueos de CORS; el navegador no expone más detalle por
+    // seguridad. No se oculta: se incluye err.message tal cual, con contexto.
+    let hint;
+    if (location.protocol === 'file:') {
+      hint = 'Esta página se abrió como archivo local (file://). Varios navegadores bloquean fetch() desde file:// hacia http:// sin importar la configuración CORS del backend. Sirve este archivo por HTTP (ver comentario al inicio del archivo) y vuelve a intentarlo.';
+    } else {
+      hint = 'Esto suele significar un bloqueo CORS (el origen ' + location.origin + ' no está autorizado por el backend en quarkus.http.cors.origins), que el backend no esté escuchando en ' + endpoint + ', o un corte de red. Revisa la pestaña Red/Network de las herramientas de desarrollador para el detalle exacto.';
+    }
+    throw new Error('No se pudo contactar ' + endpoint + ' (fetch falló: "' + err.message + '"). ' + hint);
+  }
+  clearTimeout(timeoutId);
+
+  if (!response.ok) {
+    let bodyExcerpt = '';
+    try {
+      const text = await response.text();
+      if (text) bodyExcerpt = ' Cuerpo de la respuesta: ' + text.slice(0, 220);
+    } catch (_) { /* no se pudo leer el cuerpo; se omite */ }
+    throw new Error('El backend respondió con error HTTP ' + response.status + ' ' + response.statusText + '.' + bodyExcerpt);
+  }
+
+  let json;
+  try {
+    json = await response.json();
+  } catch (e) {
+    throw new Error('La respuesta de ' + endpoint + ' no es JSON válido. ¿Es realmente el endpoint GraphQL (' + endpoint + ')?');
+  }
+
+  if (json.errors && json.errors.length) {
+    throw new Error('El backend devolvió error(es) GraphQL: ' + json.errors.map(e => e.message).join(' | '));
+  }
+  if (!json.data) {
+    throw new Error('La respuesta GraphQL no contiene datos (campo "data" vacío o ausente).');
+  }
+  return json.data;
+}
+
+/* ============================================================================
+ * ORQUESTACIÓN DE CARGA DE DATOS (siempre API real)
+ * ========================================================================== */
+async function loadSummary(range, flow) {
+  const data = await executeGraphQL(QUERIES.summary, { from: range.from, to: range.to, flow: flow || null });
+  return data.GetAiUsageSummary;
+}
+
+async function loadTimeseries(range, flow) {
+  const data = await executeGraphQL(QUERIES.timeseries, {
+    from: range.from, to: range.to, granularity: range.granularity, flow: flow || null,
+  });
+  return data.GetAiUsageTimeseries || [];
+}
+
+async function loadTopUsers(range, flow) {
+  const data = await executeGraphQL(QUERIES.topUsers, { from: range.from, to: range.to, flow: flow || null });
+  return data.GetTopAiUsageUsers || [];
+}
+
+async function loadByUser(range, flow, id) {
+  const data = await executeGraphQL(QUERIES.byUser, { from: range.from, to: range.to, flow, id });
+  return data.GetAiUsageByUser || null;
+}
+
+async function loadByModel(range, flow) {
+  const data = await executeGraphQL(QUERIES.byModel, { from: range.from, to: range.to, flow: flow || null });
+  return data.GetAiUsageByModel || [];
+}
+
+async function loadSearchUsers(range, flow, query) {
+  const data = await executeGraphQL(QUERIES.searchUsers, { from: range.from, to: range.to, flow: flow || null, query });
+  return data.SearchAiUsageUsers || [];
+}
+
+async function loadFlowCosts(range, flow) {
+  const data = await executeGraphQL(QUERIES.flowCosts, { from: range.from, to: range.to, flow: flow || null });
+  return data.GetAiUsageFlowCosts || [];
+}
+
+/**
+ * Página del historial de llamadas (paginación del lado del servidor). from/to son OPCIONALES
+ * ("todas las llamadas" = ambos null); nunca se alimentan de los filtros globales del
+ * dashboard, solo del período propio del historial.
+ */
+async function loadCallHistoryPage(flow, id, from, to, limit, offset) {
+  const data = await executeGraphQL(QUERIES.callHistory, { flow, id, from: from || null, to: to || null, limit, offset });
+  return data.GetAiUsageCallHistory || { calls: [], totalCount: 0 };
+}
+
+async function loadModelPricing() {
+  const data = await executeGraphQL(QUERIES.modelPricing, {});
+  return data.GetAiModelPricing || [];
+}
+
+async function saveModelPricing(model, inputPricePerMillion, outputPricePerMillion) {
+  const data = await executeGraphQL(QUERIES.updateModelPricing, { model, inputPricePerMillion, outputPricePerMillion });
+  return data.UpdateAiModelPricing;
+}
+
+/* ============================================================================
+ * RENDER: KPIs
+ * ========================================================================== */
+const KPI_DEFS = [
+  { key: 'totalTokens', label: 'Tokens totales', icon: 'sum', accent: false },
+  { key: 'inputTokens', label: 'Tokens de entrada', icon: 'in', accent: false },
+  { key: 'outputTokens', label: 'Tokens de salida', icon: 'out', accent: true },
+  { key: 'totalCalls', label: 'Llamadas al modelo', icon: 'calls', accent: false },
+  { key: 'averageLatencyMs', label: 'Latencia promedio', icon: 'latency', accent: true },
+];
+
+const ICONS = {
+  sum: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16l-8 8 8 8H4"/></svg>',
+  in: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 4v12m0 0l-5-5m5 5l5-5M5 20h14"/></svg>',
+  out: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V8m0 0l-5 5m5-5l5 5M5 4h14"/></svg>',
+  calls: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16v10H9l-5 4V5z"/></svg>',
+  latency: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>',
+};
+
+function renderKpis(summary) {
+  const grid = document.getElementById('kpiGrid');
+  grid.innerHTML = KPI_DEFS.map(def => {
+    const raw = summary ? summary[def.key] : null;
+    const value = def.key === 'averageLatencyMs' ? formatMs(raw) : formatInt(raw);
+    const isMuted = raw === null || raw === undefined;
+    let sub = '';
+    if (def.key === 'totalTokens' && summary) {
+      sub = 'Usuarios activos: ' + formatInt(summary.activeUsers);
+    } else if (def.key === 'inputTokens' && summary) {
+      sub = 'Prom. entrada/llamada: ' + formatDecimal(summary.averageInputTokensPerCall);
+    } else if (def.key === 'outputTokens' && summary) {
+      sub = 'Prom. salida/llamada: ' + formatDecimal(summary.averageOutputTokensPerCall);
+    } else if (def.key === 'totalCalls' && summary) {
+      sub = 'Prom/usuario: ' + formatDecimal(summary.averageCallsPerUser);
+    } else if (def.key === 'averageLatencyMs') {
+      sub = 'Promedio de llamadas con duración válida';
+    }
+    return `
+      <div class="kpi-card ${def.accent ? 'accent-turquoise' : ''}">
+        <div class="kpi-icon">${ICONS[def.icon]}</div>
+        <div class="kpi-label">${def.label}</div>
+        <div class="kpi-value ${isMuted ? 'muted' : ''}">${value}</div>
+        <div class="kpi-sub">${sub}</div>
+      </div>`;
+  }).join('');
+}
+
+/* ============================================================================
+ * RENDER: GRÁFICO DE EVOLUCIÓN (SVG propio, sin dependencias externas)
+ * ========================================================================== */
+const SERIES_COLORS = { inputTokens: '#1565c0', outputTokens: '#14b8a6', totalTokens: '#0c2340' };
+const SERIES_LABELS = { inputTokens: 'Tokens de entrada', outputTokens: 'Tokens de salida', totalTokens: 'Tokens totales' };
+
+function renderTimeseriesChart(points, granularity) {
+  const wrap = document.getElementById('chartWrap');
+  const legend = document.getElementById('chartLegend');
+
+  if (!points || points.length === 0) {
+    wrap.innerHTML = '<div class="state-box">Sin datos de consumo en el periodo seleccionado.</div>';
+    legend.innerHTML = '';
+    return;
+  }
+
+  const width = wrap.clientWidth > 0 ? wrap.clientWidth : 600;
+  const height = 260;
+  const marginLeft = 54, marginRight = 16, marginTop = 16, marginBottom = 30;
+  const plotW = width - marginLeft - marginRight;
+  const plotH = height - marginTop - marginBottom;
+
+  const seriesKeys = ['inputTokens', 'outputTokens', 'totalTokens'];
+  const maxVal = Math.max(1, ...points.flatMap(p => seriesKeys.map(k => toNum(p[k]) || 0)));
+
+  const xFor = (i) => marginLeft + (points.length === 1 ? plotW / 2 : (i / (points.length - 1)) * plotW);
+  const yFor = (v) => marginTop + plotH - (v / maxVal) * plotH;
+
+  function pathFor(key) {
+    return points.map((p, i) => (i === 0 ? 'M' : 'L') + xFor(i).toFixed(1) + ',' + yFor(toNum(p[key]) || 0).toFixed(1)).join(' ');
+  }
+
+  // Gridlines horizontales (4 niveles) + etiquetas del eje Y
+  let gridSvg = '';
+  const gridLevels = 4;
+  for (let g = 0; g <= gridLevels; g++) {
+    const val = (maxVal / gridLevels) * g;
+    const y = yFor(val);
+    gridSvg += `<line x1="${marginLeft}" y1="${y}" x2="${width - marginRight}" y2="${y}" stroke="#eef1f6" stroke-width="1"/>`;
+    gridSvg += `<text x="${marginLeft - 8}" y="${y + 4}" text-anchor="end" font-size="10.5" fill="#8995ac">${formatInt(val)}</text>`;
+  }
+
+  // Etiquetas del eje X (máximo ~7 para no saturar)
+  let xLabelsSvg = '';
+  const labelStep = Math.max(1, Math.ceil(points.length / 7));
+  points.forEach((p, i) => {
+    if (i % labelStep === 0 || i === points.length - 1) {
+      xLabelsSvg += `<text x="${xFor(i)}" y="${height - 8}" text-anchor="middle" font-size="10.5" fill="#8995ac">${formatDateShort(p.period, granularity)}</text>`;
+    }
+  });
+
+  // Puntos (con <title> para tooltip nativo accesible)
+  let pointsSvg = '';
+  seriesKeys.forEach(key => {
+    points.forEach((p, i) => {
+      const v = toNum(p[key]) || 0;
+      pointsSvg += `<circle cx="${xFor(i)}" cy="${yFor(v)}" r="2.6" fill="${SERIES_COLORS[key]}">` +
+        `<title>${SERIES_LABELS[key]} · ${formatDateShort(p.period, granularity)}: ${formatInt(v)} tokens</title></circle>`;
+    });
+  });
+
+  const linesSvg = seriesKeys.map(key =>
+    `<path d="${pathFor(key)}" fill="none" stroke="${SERIES_COLORS[key]}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round"/>`
+  ).join('');
+
+  wrap.innerHTML = `<svg viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img" aria-label="Evolución de tokens">
+    ${gridSvg}${xLabelsSvg}${linesSvg}${pointsSvg}
+  </svg>`;
+
+  legend.innerHTML = seriesKeys.map(key =>
+    `<span class="legend-item"><span class="legend-dot" style="background:${SERIES_COLORS[key]}"></span>${SERIES_LABELS[key]}</span>`
+  ).join('');
+}
+
+/* ============================================================================
+ * RENDER: CONSUMO Y COSTOS POR FLUJO
+ * El backend ya devuelve la fila TOTAL calculada (sumando CLIENT+PATIENT del
+ * mismo resultado, sin una consulta aparte): aquí solo se muestran las filas
+ * tal como llegan, sin volver a sumarlas en el frontend.
+ * ========================================================================== */
+function renderFlowCosts(rows) {
+  const container = document.getElementById('flowCostContainer');
+  if (!rows || rows.length === 0) {
+    container.innerHTML = '<div class="state-box">Sin actividad registrada para el periodo y flujo seleccionados.</div>';
+    return;
+  }
+
+  const bodyRows = rows.filter(r => r.flow !== null);
+  const totalRow = rows.find(r => r.flow === null);
+
+  const rowHtml = (r) => `
+    <tr>
+      <td>${flowPillHtml(r.flow)}${missingPricingBadge(r.hasMissingPricing)}</td>
+      <td class="num">${formatInt(r.totalCalls)}</td>
+      <td class="num">${formatInt(r.inputTokens)}</td>
+      <td class="num">${formatInt(r.outputTokens)}</td>
+      <td class="num">${formatInt(r.totalTokens)}</td>
+      <td class="num">${formatCost(r.costInputUsd)}</td>
+      <td class="num">${formatCost(r.costOutputUsd)}</td>
+      <td class="num">${formatCost(r.costTotalUsd)}</td>
+      <td class="num">${formatAvgTokensPerCall(r.totalTokens, r.totalCalls)}</td>
+      <td class="num">${formatAvgCostPerCall(r.costTotalUsd, r.totalCalls, r.hasMissingPricing)}</td>
+    </tr>`;
+
+  container.innerHTML = `
+    <div class="table-scroll">
+    <table class="exec-table">
+      <thead><tr>
+        <th>Flujo</th><th class="num">Llamadas</th>
+        <th class="num">Tokens entrada</th><th class="num">Tokens salida</th><th class="num">Tokens totales</th>
+        <th class="num">Costo entrada</th><th class="num">Costo salida</th><th class="num">Costo total</th>
+        <th class="num">Prom. tokens/llamada</th><th class="num">Prom. costo/llamada</th>
+      </tr></thead>
+      <tbody>${bodyRows.map(rowHtml).join('')}</tbody>
+      ${totalRow ? `<tfoot>${rowHtml(totalRow)}</tfoot>` : ''}
+    </table>
+    </div>`;
+}
+
+/**
+ * Período y flujo LOCALES de este panel (sus propios controles, independientes de los
+ * filtros globales salvo cuando se sincronizan vía «Actualizar datos»). Reutiliza la misma
+ * query GetAiUsageFlowCosts (ya acepta flow como filtro opcional). flowCostLoadToken evita
+ * que una respuesta antigua (de un cambio de filtro anterior) sobrescriba la más reciente
+ * si llegan desordenadas.
+ */
+let flowCostLoadToken = 0;
+
+async function refreshFlowCostPanel() {
+  const myToken = ++flowCostLoadToken;
+  const container = document.getElementById('flowCostContainer');
+  const period = document.getElementById('flowCostPeriodSelect').value;
+  const flow = document.getElementById('flowCostFlowFilter').value;
+  const range = computeRange(period, 'flowCostCustomFrom', 'flowCostCustomTo');
+  if (!range) {
+    container.innerHTML = '<div class="state-box">Selecciona un rango de fechas "desde" y "hasta" válido.</div>';
+    return;
+  }
+  container.innerHTML = '<div class="state-box">Cargando…</div>';
+  try {
+    const rows = await loadFlowCosts(range, flow);
+    if (myToken !== flowCostLoadToken) return; // una selección más reciente del filtro ya está en curso
+    renderFlowCosts(rows);
+  } catch (err) {
+    if (myToken !== flowCostLoadToken) return;
+    console.error('[dashboard-ejecutivo] Error en GetAiUsageFlowCosts:', err);
+    showSectionError('flowCostContainer', err.message);
+  }
+}
+
+/* ============================================================================
+ * RENDER: USUARIOS CON MAYOR CONSUMO
+ * Columna "Flujo" movida al final; columna "Costo total" agregada antes de
+ * ella, ya calculada por el backend (suma por llamada según el modelo real
+ * de cada una, no una tarifa única sobre tokens agregados).
+ * ========================================================================== */
+function renderTopUsers(users) {
+  const container = document.getElementById('topUsersContainer');
+  if (!users || users.length === 0) {
+    container.innerHTML = '<div class="state-box">Sin actividad registrada en el periodo seleccionado.</div>';
+    return;
+  }
+  const rows = users.map((u, idx) => `
+    <tr>
+      <td>${idx + 1}</td>
+      <td>
+        ${escapeHtml(u.name || 'Sin nombre')}
+        <br><span class="id-truncate" title="${escapeHtml(u.userId)}">${truncateId(u.userId)}</span>
+      </td>
+      <td>${escapeHtml(u.country || 'No disponible')}</td>
+      <td>${escapeHtml(u.ip || 'No disponible')}</td>
+      <td class="num">${formatInt(u.totalTokens)}</td>
+      <td class="num">${formatInt(u.totalCalls)}</td>
+      <td class="num">${formatDecimal(u.averageInputTokensPerCall)}</td>
+      <td class="num">${formatDecimal(u.averageOutputTokensPerCall)}</td>
+      <td class="num">${formatMs(u.averageLatencyMs)}</td>
+      <td class="num">${formatCost(u.costTotalUsd)}${missingPricingBadge(u.hasMissingPricing)}</td>
+      <td>${flowPillHtml(u.flow)}</td>
+    </tr>`).join('');
+
+  container.innerHTML = `
+    <div class="table-scroll">
+    <table class="exec-table">
+      <thead><tr>
+        <th>#</th><th>Usuario</th><th>País</th><th>IP</th>
+        <th class="num">Tokens totales</th><th class="num">Llamadas</th>
+        <th class="num">Prom. entrada/llamada</th><th class="num">Prom. salida/llamada</th><th class="num">Latencia prom.</th>
+        <th class="num">Costo total</th><th>Flujo</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    </div>`;
+}
+
+/* ============================================================================
+ * RENDER: CONSUMO POR MODELO DE IA
+ * Filtro de Flujo propio: dispara su propia llamada a GetAiUsageByModel
+ * (independiente del filtro global). Filtro de Modelo: filtra en el cliente
+ * sobre lo ya cargado (GetAiUsageByModel no tiene parámetro de modelo).
+ * ========================================================================== */
+let modelLoadToken = 0;
+
+async function refreshModelPanel() {
+  const myToken = ++modelLoadToken;
+  const container = document.getElementById('modelStatsContainer');
+  const period = document.getElementById('modelPeriodSelect').value;
+  const flow = document.getElementById('modelFlowFilter').value;
+  const range = computeRange(period, 'modelCustomFrom', 'modelCustomTo');
+  if (!range) {
+    container.innerHTML = '<div class="state-box">Selecciona un rango de fechas "desde" y "hasta" válido.</div>';
+    return [];
+  }
+  container.innerHTML = '<div class="state-box">Cargando…</div>';
+  try {
+    const modelStats = await loadByModel(range, flow);
+    if (myToken !== modelLoadToken) return state.lastModelStats; // una selección más reciente ya está en curso
+    state.lastModelStats = modelStats;
+    populateModelModelFilterOptions(modelStats);
+    renderModelStatsPanel();
+    return modelStats;
+  } catch (err) {
+    if (myToken !== modelLoadToken) return state.lastModelStats;
+    console.error('[dashboard-ejecutivo] Error en GetAiUsageByModel:', err);
+    showSectionError('modelStatsContainer', err.message);
+    return [];
+  }
+}
+
+function populateModelModelFilterOptions(modelStats) {
+  const select = document.getElementById('modelModelFilter');
+  const previousValue = select.value;
+  const models = Array.from(new Set((modelStats || []).map(m => m.model))).sort();
+  select.innerHTML = '<option value="">Todos</option>' +
+    models.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+  select.value = models.includes(previousValue) ? previousValue : '';
+}
+
+function renderModelStatsPanel() {
+  const container = document.getElementById('modelStatsContainer');
+  let stats = state.lastModelStats || [];
+  const modelFilter = document.getElementById('modelModelFilter').value;
+  if (modelFilter) stats = stats.filter(m => m.model === modelFilter);
+
+  if (stats.length === 0) {
+    container.innerHTML = '<div class="state-box">Sin llamadas a modelos de IA para los filtros seleccionados.</div>';
+    return;
+  }
+  const rows = stats.map(m => `
+    <tr>
+      <td>${escapeHtml(m.model)}</td>
+      <td class="num">${formatInt(m.totalCalls)}</td>
+      <td class="num">${formatInt(m.inputTokens)}</td>
+      <td class="num">${formatInt(m.outputTokens)}</td>
+      <td class="num">${formatInt(m.totalTokens)}</td>
+      <td class="num">${formatCost(m.costInputUsd)}</td>
+      <td class="num">${formatCost(m.costOutputUsd)}</td>
+      <td class="num">${formatCost(m.costTotalUsd)}${m.hasPricing ? '' : missingPricingBadge(true)}</td>
+      <td class="num">${formatAvgTokensPerCall(m.totalTokens, m.totalCalls)}</td>
+      <td class="num">${formatAvgCostPerCall(m.costTotalUsd, m.totalCalls, !m.hasPricing)}</td>
+    </tr>`).join('');
+
+  container.innerHTML = `
+    <div class="table-scroll">
+    <table class="exec-table">
+      <thead><tr>
+        <th>Modelo</th><th class="num">Llamadas</th>
+        <th class="num">Tokens entrada</th><th class="num">Tokens salida</th><th class="num">Tokens totales</th>
+        <th class="num">Costo entrada</th><th class="num">Costo salida</th><th class="num">Costo total</th>
+        <th class="num">Prom. tokens/llamada</th><th class="num">Prom. costo/llamada</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    </div>`;
+}
+
+document.getElementById('modelModelFilter').addEventListener('change', () => {
+  renderModelStatsPanel();
+});
+
+/* ============================================================================
+ * RENDER: DETALLE DE USUARIO
+ * La identidad del usuario (búsqueda/selección) no depende de ningún período. El período
+ * SOLO se aplica al historial de llamadas (paginado del lado del servidor, GetAiUsageCallHistory)
+ * y, para no duplicar selectores que controlarían la misma información, también a los
+ * indicadores agregados (GetAiUsageByUser) — ambos comparten el período elegido en
+ * "historyPeriodSelect", que vive dentro del detalle del usuario seleccionado.
+ * ========================================================================== */
+const HISTORY_PAGE_SIZE = 10;
+// GetAiUsageByUser exige from/to concretos (a diferencia de GetAiUsageCallHistory, donde
+// from/to son opcionales): cuando el historial usa "Todas las llamadas" (sin período real),
+// los indicadores igualmente necesitan un rango concreto, así que se usa este rango amplio
+// como equivalente práctico de "todo el tiempo" únicamente para esa consulta.
+const HISTORY_ALL_TIME_FROM_ISO = '2000-01-01T00:00:00.000Z';
+
+/** Cabecera + tarjetas de indicadores de un usuario (sin el historial). */
+function buildUserDetailTopHtml(user, flow, id) {
+  if (!user) {
+    return `<div class="state-box">No se encontró ningún usuario con ese identificador para el flujo seleccionado.</div>`;
+  }
+  return `
+    <div class="user-detail-header">
+      <strong>${escapeHtml(user.name || 'Sin nombre')}</strong>
+      ${flowPillHtml(user.flow)}
+      <span>País: ${escapeHtml(user.country || 'No disponible')}</span>
+      <span>IP: ${escapeHtml(user.ip || 'No disponible')}</span>
+      <span class="id-truncate" title="${escapeHtml(user.userId || id)}">${truncateId(user.userId || id)}</span>
+    </div>
+    <div class="user-detail-grid">
+      <div class="kpi-card"><div class="kpi-label">Tokens totales</div><div class="kpi-value">${formatInt(user.totalTokens)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Llamadas</div><div class="kpi-value">${formatInt(user.totalCalls)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Prom. entrada/llamada</div><div class="kpi-value">${formatDecimal(user.averageInputTokensPerCall)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Prom. salida/llamada</div><div class="kpi-value">${formatDecimal(user.averageOutputTokensPerCall)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Costo de entrada</div><div class="kpi-value">${formatCost(user.costInputUsd)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Costo de salida</div><div class="kpi-value">${formatCost(user.costOutputUsd)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Costo total</div><div class="kpi-value">${formatCost(user.costTotalUsd)}${missingPricingBadge(user.hasMissingPricing)}</div></div>
+      <div class="kpi-card"><div class="kpi-label">Latencia promedio</div><div class="kpi-value">${formatMs(user.averageLatencyMs)}</div></div>
+    </div>`;
+}
+
+/** Primera selección de un usuario: pinta el armazón (cabecera en "Consultando…" + controles
+ * de período/paginación del historial) y deja que refreshIndicatorsAndHistory() traiga los
+ * datos reales — así no se hace una consulta GetAiUsageByUser de "descubrimiento" aparte. */
+function renderUserDetail(flow, id) {
+  const container = document.getElementById('userDetailContainer');
+  state.historyPage = 0;
+  container.innerHTML = `
+    <div id="userDetailTopWrap"><div class="state-box">Consultando…</div></div>
+    <p class="small-note" id="userIndicatorsScopeNote">Los indicadores de arriba y el historial de abajo corresponden al período elegido aquí.</p>
+    <div class="filters" style="margin-bottom: 14px;">
+      <div class="field">
+        <label for="historyPeriodSelect">Período del historial</label>
+        <select id="historyPeriodSelect">
+          <option value="24h" selected>Últimas 24 horas</option>
+          <option value="7d">Últimos 7 días</option>
+          <option value="30d">Últimos 30 días</option>
+          <option value="all">Todas las llamadas</option>
+          <option value="custom">Rango personalizado</option>
+        </select>
+      </div>
+      <div class="field" id="historyCustomFromField" style="display:none;">
+        <label for="historyCustomFrom">Desde</label>
+        <input type="date" id="historyCustomFrom" />
+      </div>
+      <div class="field" id="historyCustomToField" style="display:none;">
+        <label for="historyCustomTo">Hasta (incluido)</label>
+        <input type="date" id="historyCustomTo" />
+      </div>
+    </div>
+    <div id="userCallHistoryContainer"><div class="state-box">Cargando historial…</div></div>
+    <div class="pagination-bar" id="historyPaginationBar"></div>`;
+
+  wireHistoryPeriodControls();
+  refreshIndicatorsAndHistory();
+}
+
+/** Calcula el rango para el período propio del historial. "all" = sin período real
+ * (from/to = null), que GetAiUsageCallHistory soporta de forma nativa. */
+function historyRange() {
+  const period = document.getElementById('historyPeriodSelect').value;
+  if (period === 'all') {
+    return { from: null, to: null, granularity: null, isAllTime: true };
+  }
+  const range = computeRange(period, 'historyCustomFrom', 'historyCustomTo');
+  return range ? { ...range, isAllTime: false } : null;
+}
+
+function wireHistoryPeriodControls() {
+  const periodSelect = document.getElementById('historyPeriodSelect');
+  const fromInput = document.getElementById('historyCustomFrom');
+  const toInput = document.getElementById('historyCustomTo');
+
+  periodSelect.addEventListener('change', () => {
+    const isCustom = periodSelect.value === 'custom';
+    document.getElementById('historyCustomFromField').style.display = isCustom ? 'flex' : 'none';
+    document.getElementById('historyCustomToField').style.display = isCustom ? 'flex' : 'none';
+    if (!isCustom) refreshIndicatorsAndHistory();
+  });
+  fromInput.addEventListener('change', () => { if (periodSelect.value === 'custom') refreshIndicatorsAndHistory(); });
+  toInput.addEventListener('change', () => { if (periodSelect.value === 'custom') refreshIndicatorsAndHistory(); });
+}
+
+/**
+ * Se dispara al seleccionar un usuario o al cambiar el período propio del historial: vuelve a
+ * la página 1, y refresca TANTO los indicadores (GetAiUsageByUser) COMO la primera página del
+ * historial (GetAiUsageCallHistory), ambos con el mismo período — nunca promedia ni combina
+ * cifras de llamadas o tokens ya registradas, solo vuelve a consultarlas.
+ */
+async function refreshIndicatorsAndHistory() {
+  if (!state.selectedUser) return;
+  state.historyPage = 0;
+  await refreshUserDetailIndicatorsOnly();
+}
+
+/**
+ * Recalcula indicadores + la página ACTUAL del historial (sin tocar state.historyPage): la
+ * usan tanto el botón de recarga individual del panel como la recarga global, que deben
+ * conservar la página en la que ya estaba el usuario, no volver a la primera.
+ */
+let userDetailIndicatorsLoadToken = 0;
+
+async function refreshUserDetailIndicatorsOnly() {
+  if (!state.selectedUser) return;
+  const range = historyRange();
+  const wrap = document.getElementById('userDetailTopWrap');
+  if (!wrap) return; // no hay ningún usuario pintado todavía (no debería pasar si selectedUser existe)
+  if (!range) {
+    wrap.innerHTML = '<div class="state-box">Selecciona un rango de fechas "desde" y "hasta" válido.</div>';
+    document.getElementById('userCallHistoryContainer').innerHTML = '';
+    document.getElementById('historyPaginationBar').innerHTML = '';
+    return;
+  }
+
+  const myToken = ++userDetailIndicatorsLoadToken;
+  const { flow, id } = state.selectedUser;
+  const indicatorsRange = range.isAllTime
+    ? { from: HISTORY_ALL_TIME_FROM_ISO, to: new Date().toISOString() }
+    : range;
+
+  try {
+    const user = await loadByUser(indicatorsRange, flow, id);
+    if (myToken !== userDetailIndicatorsLoadToken) return;
+    wrap.innerHTML = buildUserDetailTopHtml(user, flow, id);
+  } catch (err) {
+    if (myToken !== userDetailIndicatorsLoadToken) return;
+    console.error('[dashboard-ejecutivo] Error en GetAiUsageByUser (indicadores):', err);
+    wrap.innerHTML = `<div class="state-box error"><strong>No se pudieron actualizar los indicadores</strong><span>${escapeHtml(err.message)}</span></div>`;
+  }
+
+  await refreshHistoryPage();
+}
+
+/**
+ * Carga SOLO la página actual del historial (state.historyPage), sin tocar los indicadores.
+ * historyPageLoadToken evita que una página antigua (p. ej. tras cambiar de usuario o de
+ * período muy rápido) sobrescriba la página más reciente que ya se pidió. Si la página
+ * guardada ya no es válida (p. ej. el total de llamadas bajó de ese período), se recorta a
+ * la última página disponible en vez de mostrar un vacío engañoso.
+ */
+let historyPageLoadToken = 0;
+
+async function refreshHistoryPage() {
+  if (!state.selectedUser) return;
+  const myToken = ++historyPageLoadToken;
+  const { flow, id } = state.selectedUser;
+  const range = historyRange();
+  const container = document.getElementById('userCallHistoryContainer');
+  if (!container) return; // el usuario pudo haber cambiado mientras la consulta estaba en curso
+  if (!range) return; // ya se mostró el error de rango inválido en refreshUserDetailIndicatorsOnly
+
+  container.innerHTML = '<div class="state-box">Cargando historial…</div>';
+  let offset = state.historyPage * HISTORY_PAGE_SIZE;
+  try {
+    let page = await loadCallHistoryPage(flow, id, range.from, range.to, HISTORY_PAGE_SIZE, offset);
+    if (myToken !== historyPageLoadToken) return;
+    // La página guardada ya no es válida (p. ej. offset más allá del total actual): se
+    // recorta a la última página real en vez de mostrar un vacío engañoso.
+    if (page.calls.length === 0 && state.historyPage > 0 && toNum(page.totalCount) > 0) {
+      state.historyPage = Math.max(0, Math.ceil(page.totalCount / HISTORY_PAGE_SIZE) - 1);
+      offset = state.historyPage * HISTORY_PAGE_SIZE;
+      page = await loadCallHistoryPage(flow, id, range.from, range.to, HISTORY_PAGE_SIZE, offset);
+      if (myToken !== historyPageLoadToken) return;
+    }
+    renderCallHistory(page);
+  } catch (err) {
+    if (myToken !== historyPageLoadToken) return;
+    console.error('[dashboard-ejecutivo] Error en GetAiUsageCallHistory:', err);
+    showSectionError('userCallHistoryContainer', err.message);
+    document.getElementById('historyPaginationBar').innerHTML = '';
+  }
+}
+
+/**
+ * Botón de recarga individual del panel "Detalle de un usuario" (y parte de la recarga
+ * global): conserva usuario seleccionado, período del historial y página actual; no
+ * reinicia filtros ni reselecciona a otro usuario. Si no hay usuario seleccionado, repite
+ * la búsqueda activa (si hay texto escrito) en vez de no hacer nada.
+ */
+async function refreshUserDetailPanel() {
+  if (state.selectedUser) {
+    await refreshUserDetailIndicatorsOnly();
+  } else {
+    const query = document.getElementById('searchQuery').value.trim();
+    if (query.length >= MIN_SEARCH_QUERY_LENGTH) await runUserSearch(query);
+  }
+}
+
+function renderCallHistory(page) {
+  const container = document.getElementById('userCallHistoryContainer');
+  const bar = document.getElementById('historyPaginationBar');
+  if (!container || !bar) return; // el usuario pudo haber cambiado mientras la consulta estaba en curso
+  const calls = (page && page.calls) || [];
+  const totalCount = toNum(page && page.totalCount) || 0;
+
+  if (calls.length === 0) {
+    container.innerHTML = '<div class="state-box">Sin llamadas registradas para el período seleccionado.</div>';
+    bar.innerHTML = '';
+    return;
+  }
+
+  const rows = calls.map(c => `
+    <tr>
+      <td>${formatDateTimeLocal(c.createdAt)}</td>
+      <td>${escapeHtml(c.model)}</td>
+      <td class="num">${formatInt(c.inputTokens)}</td>
+      <td class="num">${formatInt(c.outputTokens)}</td>
+      <td class="num">${formatCost(c.costTotalUsd)}${c.hasPricing ? '' : missingPricingBadge(true)}</td>
+    </tr>`).join('');
+
+  container.innerHTML = `
+    <div class="table-scroll">
+    <table class="exec-table">
+      <thead><tr><th>Fecha</th><th>Modelo</th><th class="num">Tokens entrada</th><th class="num">Tokens salida</th><th class="num">Costo total</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    </div>`;
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / HISTORY_PAGE_SIZE));
+  const currentPage = state.historyPage + 1;
+  const from = state.historyPage * HISTORY_PAGE_SIZE + 1;
+  const to = state.historyPage * HISTORY_PAGE_SIZE + calls.length;
+  bar.innerHTML = `
+    <button class="btn btn-secondary" id="historyPrevBtn" type="button" ${state.historyPage <= 0 ? 'disabled' : ''}>Anterior</button>
+    <span>Página ${currentPage} de ${totalPages} · mostrando ${from}–${to} de ${formatInt(totalCount)} llamadas</span>
+    <button class="btn btn-secondary" id="historyNextBtn" type="button" ${currentPage >= totalPages ? 'disabled' : ''}>Siguiente</button>`;
+
+  document.getElementById('historyPrevBtn').addEventListener('click', () => {
+    if (state.historyPage > 0) {
+      state.historyPage -= 1;
+      refreshHistoryPage();
+    }
+  });
+  document.getElementById('historyNextBtn').addEventListener('click', () => {
+    if (currentPage < totalPages) {
+      state.historyPage += 1;
+      refreshHistoryPage();
+    }
+  });
+}
+
+/* ============================================================================
+ * RENDER: BÚSQUEDA DE USUARIO (SearchAiUsageUsers)
+ * ========================================================================== */
+function renderSearchResults(matches, query) {
+  const container = document.getElementById('userSearchResults');
+  if (!matches || matches.length === 0) {
+    container.innerHTML = `<div class="state-box">Sin coincidencias para "${escapeHtml(query)}" con actividad en el periodo seleccionado.</div>`;
+    return;
+  }
+  const rows = matches.map(m => `
+    <button type="button" class="search-result-row" data-user-id="${escapeHtml(m.userId)}" data-flow="${escapeHtml(m.flow)}">
+      <span class="search-result-name">${escapeHtml(m.name || 'Sin nombre')}</span>
+      ${flowPillHtml(m.flow)}
+      <span class="search-result-meta">País: ${escapeHtml(m.country || 'No disponible')} · IP: ${escapeHtml(m.ip || 'No disponible')}</span>
+      <span class="id-truncate" title="${escapeHtml(m.userId)}">${truncateId(m.userId)}</span>
+    </button>`).join('');
+  container.innerHTML = `<div class="search-results-list">${rows}</div>`;
+
+  container.querySelectorAll('.search-result-row').forEach(btn => {
+    btn.addEventListener('click', () => selectSearchedUser(btn.dataset.userId, btn.dataset.flow));
+  });
+}
+
+/**
+ * La identidad del usuario (quién es) no depende de ningún período: solo fija su flujo/id
+ * (ya conocidos desde la búsqueda) y deja que renderUserDetail()/refreshIndicatorsAndHistory()
+ * se encarguen de traer los indicadores y la primera página del historial con el período
+ * propio del historial (por defecto, "Últimas 24 horas").
+ */
+function selectSearchedUser(id, flow) {
+  state.selectedUser = { flow, id };
+  // Oculta la lista de resultados de búsqueda: de lo contrario, el usuario elegido queda
+  // visible dos veces (en su fila de resultado y en la tarjeta de detalle de abajo).
+  document.getElementById('userSearchResults').innerHTML = '';
+  renderUserDetail(flow, id);
+}
+
+/* ============================================================================
+ * MODAL DE PRECIOS POR MODELO (GetAiModelPricing / UpdateAiModelPricing)
+ * Sin localStorage: la única fuente de verdad es Supabase, vía el backend.
+ * No hay "restaurar valores de fábrica" (no existe un valor de fábrica
+ * seguro para un modelo real): "Recargar valor guardado" solo vuelve a
+ * traer el precio ya persistido, sin sobrescribir nada.
+ * ========================================================================== */
+function showPricingMessage(text, isError) {
+  const el = document.getElementById('pricingModalMessage');
+  el.textContent = text;
+  el.className = 'modal-message visible ' + (isError ? 'error' : 'success');
+}
+
+function clearPricingMessage() {
+  const el = document.getElementById('pricingModalMessage');
+  el.className = 'modal-message';
+  el.textContent = '';
+}
+
+function populatePricingModelSelect() {
+  const select = document.getElementById('pricingModelSelect');
+  const previousValue = select.value;
+  const fromPricing = state.pricingList.map(p => p.model);
+  const fromUsage = (state.lastModelStats || []).map(m => m.model);
+  const models = Array.from(new Set([...fromPricing, ...fromUsage])).sort();
+  select.innerHTML = models.map(m => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+  if (models.includes(previousValue)) select.value = previousValue;
+}
+
+function loadPricingIntoForm(model) {
+  const entry = state.pricingList.find(p => p.model === model);
+  document.getElementById('pricingInputPrice').value = entry ? entry.inputPricePerMillion : '';
+  document.getElementById('pricingOutputPrice').value = entry ? entry.outputPricePerMillion : '';
+}
+
+async function openPricingModal() {
+  clearPricingMessage();
+  document.getElementById('pricingModalOverlay').classList.add('open');
+  try {
+    state.pricingList = await loadModelPricing();
+  } catch (err) {
+    console.error('[dashboard-ejecutivo] Error en GetAiModelPricing:', err);
+    showPricingMessage('No se pudieron cargar las tarifas: ' + err.message, true);
+  }
+  populatePricingModelSelect();
+  const select = document.getElementById('pricingModelSelect');
+  if (select.value) loadPricingIntoForm(select.value);
+}
+
+function closePricingModal() {
+  document.getElementById('pricingModalOverlay').classList.remove('open');
+}
+
+async function reloadPricingFromServer() {
+  clearPricingMessage();
+  const model = document.getElementById('pricingModelSelect').value;
+  try {
+    state.pricingList = await loadModelPricing();
+    loadPricingIntoForm(model);
+    showPricingMessage('Se recargó el valor guardado para este modelo.', false);
+  } catch (err) {
+    console.error('[dashboard-ejecutivo] Error recargando GetAiModelPricing:', err);
+    showPricingMessage('No se pudo recargar: ' + err.message, true);
+  }
+}
+
+async function savePricingModal() {
+  clearPricingMessage();
+  const model = document.getElementById('pricingModelSelect').value;
+  const inputPrice = toNum(document.getElementById('pricingInputPrice').value);
+  const outputPrice = toNum(document.getElementById('pricingOutputPrice').value);
+
+  if (!model) {
+    showPricingMessage('Selecciona un modelo.', true);
+    return;
+  }
+  if (inputPrice === null || outputPrice === null || inputPrice < 0 || outputPrice < 0) {
+    showPricingMessage('Los precios deben ser números válidos y no negativos.', true);
+    return;
+  }
+
+  const saveBtn = document.getElementById('pricingSaveBtn');
+  saveBtn.disabled = true;
+  try {
+    const saved = await saveModelPricing(model, inputPrice, outputPrice);
+    showPricingMessage(`Guardado: ${saved.model} → entrada ${saved.inputPricePerMillion} / salida ${saved.outputPricePerMillion} ${saved.currency} por 1M tokens.`, false);
+    // Refleja el resultado REAL devuelto por el backend, no lo que se envió.
+    const idx = state.pricingList.findIndex(p => p.model === saved.model);
+    if (idx >= 0) state.pricingList[idx] = saved; else state.pricingList.push(saved);
+    loadPricingIntoForm(model);
+    await refreshCostDependentPanels();
+  } catch (err) {
+    console.error('[dashboard-ejecutivo] Error en UpdateAiModelPricing:', err);
+    showPricingMessage('No se pudo guardar: ' + err.message, true);
+  } finally {
+    saveBtn.disabled = false;
+  }
+}
+
+/** Tras guardar un precio, recalcula todos los paneles cuyo costo depende de ai_model_pricing. */
+async function refreshCostDependentPanels() {
+  await refreshTopUsersPanel();
+  await refreshFlowCostPanel();
+  await refreshModelPanel();
+  if (state.selectedUser) {
+    // Re-selecciona por completo (indicadores + historial): el historial también muestra
+    // costos por llamada, que dependen de la tarifa recién guardada.
+    selectSearchedUser(state.selectedUser.id, state.selectedUser.flow);
+  }
+}
+
+document.getElementById('modelPricingGearBtn').addEventListener('click', openPricingModal);
+document.getElementById('pricingCloseBtn').addEventListener('click', closePricingModal);
+document.getElementById('pricingCancelBtn').addEventListener('click', closePricingModal);
+document.getElementById('pricingReloadBtn').addEventListener('click', reloadPricingFromServer);
+document.getElementById('pricingSaveBtn').addEventListener('click', savePricingModal);
+document.getElementById('pricingModelSelect').addEventListener('change', (e) => {
+  clearPricingMessage();
+  loadPricingIntoForm(e.target.value);
+});
+document.getElementById('pricingModalOverlay').addEventListener('click', (e) => {
+  if (e.target.id === 'pricingModalOverlay') closePricingModal();
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closePricingModal();
+});
+
+/* ============================================================================
+ * ESTADOS DE CARGA / ERROR
+ * ========================================================================== */
+function showSectionError(containerId, message) {
+  document.getElementById(containerId).innerHTML =
+    `<div class="state-box error"><strong>No se pudieron cargar los datos</strong><span>${escapeHtml(message)}</span></div>`;
+}
+
+function showGlobalError(message) {
+  const banner = document.getElementById('globalErrorBanner');
+  if (!message) {
+    banner.classList.remove('visible');
+    banner.textContent = '';
+    return;
+  }
+  banner.textContent = '⚠ ' + message;
+  banner.classList.add('visible');
+}
+
+/* ============================================================================
+ * PANEL: INDICADORES EJECUTIVOS — siempre datos reales; ningún valor ficticio
+ * sustituye nunca a un fallo de consulta.
+ * ========================================================================== */
+let kpiLoadToken = 0;
+
+async function refreshKpiPanel() {
+  const myToken = ++kpiLoadToken;
+  const period = document.getElementById('kpiPeriodSelect').value;
+  const flow = document.getElementById('kpiFlowSelect').value;
+  const range = computeRange(period, 'kpiCustomFrom', 'kpiCustomTo');
+  if (!range) {
+    document.getElementById('kpiPeriodHint').textContent = 'Selecciona un rango de fechas "desde" y "hasta" válido.';
+    showSectionError('kpiGrid', 'Selecciona un rango de fechas "desde" y "hasta" válido.');
+    return;
+  }
+  document.getElementById('kpiPeriodHint').textContent =
+    'Datos del ' + formatDateTimeLocal(range.from) + ' al ' + formatDateTimeLocal(range.to);
+  try {
+    const summary = await loadSummary(range, flow);
+    if (myToken !== kpiLoadToken) return; // una selección más reciente ya está en curso
+    renderKpis(summary);
+    document.getElementById('lastUpdated').textContent = new Date().toLocaleString('es-PE', { dateStyle: 'medium', timeStyle: 'medium' });
+    state.apiConnected = true;
+  } catch (err) {
+    if (myToken !== kpiLoadToken) return;
+    console.error('[dashboard-ejecutivo] Error en GetAiUsageSummary (indicadores):', err);
+    state.apiConnected = false;
+    showSectionError('kpiGrid', err.message);
+  }
+}
+
+/* ============================================================================
+ * PANEL: EVOLUCIÓN DEL CONSUMO DE TOKENS
+ * ========================================================================== */
+let timeseriesLoadToken = 0;
+
+async function refreshTimeseriesPanel() {
+  const myToken = ++timeseriesLoadToken;
+  const period = document.getElementById('tsPeriodSelect').value;
+  const flow = document.getElementById('tsFlowSelect').value;
+  const range = computeRange(period, 'tsCustomFrom', 'tsCustomTo');
+  if (!range) {
+    document.getElementById('timeseriesHint').textContent = 'Selecciona un rango de fechas "desde" y "hasta" válido.';
+    document.getElementById('chartWrap').innerHTML = '<div class="state-box">Selecciona un rango de fechas válido.</div>';
+    document.getElementById('chartLegend').innerHTML = '';
+    return;
+  }
+  document.getElementById('timeseriesHint').textContent = 'Agrupado por ' + granularityLabel(range.granularity);
+  document.getElementById('chartWrap').innerHTML = '<div class="state-box">Cargando…</div>';
+  try {
+    const points = await loadTimeseries(range, flow);
+    if (myToken !== timeseriesLoadToken) return;
+    state.lastTimeseriesPoints = points;
+    state.lastTimeseriesGranularity = range.granularity;
+    renderTimeseriesChart(points, range.granularity);
+  } catch (err) {
+    if (myToken !== timeseriesLoadToken) return;
+    console.error('[dashboard-ejecutivo] Error en GetAiUsageTimeseries:', err);
+    showSectionError('chartWrap', err.message);
+    document.getElementById('chartLegend').innerHTML = '';
+  }
+}
+
+function granularityLabel(granularity) {
+  return { HOUR: 'hora', DAY: 'día', WEEK: 'semana', MONTH: 'mes' }[granularity] || granularity;
+}
+
+/* ============================================================================
+ * PANEL: USUARIOS CON MAYOR CONSUMO
+ * ========================================================================== */
+let topUsersLoadToken = 0;
+
+async function refreshTopUsersPanel() {
+  const myToken = ++topUsersLoadToken;
+  const container = document.getElementById('topUsersContainer');
+  const period = document.getElementById('topUsersPeriodSelect').value;
+  const flow = document.getElementById('topUsersFlowSelect').value;
+  const range = computeRange(period, 'topUsersCustomFrom', 'topUsersCustomTo');
+  if (!range) {
+    container.innerHTML = '<div class="state-box">Selecciona un rango de fechas "desde" y "hasta" válido.</div>';
+    return;
+  }
+  container.innerHTML = '<div class="state-box">Cargando…</div>';
+  try {
+    const users = await loadTopUsers(range, flow);
+    if (myToken !== topUsersLoadToken) return;
+    renderTopUsers(users);
+  } catch (err) {
+    if (myToken !== topUsersLoadToken) return;
+    console.error('[dashboard-ejecutivo] Error en GetTopAiUsageUsers:', err);
+    showSectionError('topUsersContainer', err.message);
+  }
+}
+
+/* ============================================================================
+ * FILTROS GLOBALES — solo "seleccionan" (controles propios, sin disparar ninguna
+ * consulta). Únicamente «Actualizar datos» copia esos valores a los controles
+ * LOCALES de cada panel y dispara el refresco de cada uno.
+ * ========================================================================== */
+document.getElementById('periodSelect').addEventListener('change', () => {
+  const isCustom = document.getElementById('periodSelect').value === 'custom';
+  document.getElementById('customFromField').style.display = isCustom ? 'flex' : 'none';
+  document.getElementById('customToField').style.display = isCustom ? 'flex' : 'none';
+});
+
+/** Copia período/flujo global a los controles locales de un panel (y los muestra/oculta
+ * correctamente si el período es "custom"), sin disparar todavía su refresco. */
+function syncPanelFilters(prefix, period, flow, customFrom, customTo, flowSelectIdOverride) {
+  const periodSelect = document.getElementById(prefix + 'PeriodSelect');
+  periodSelect.value = period;
+  const isCustom = period === 'custom';
+  document.getElementById(prefix + 'CustomFromField').style.display = isCustom ? 'flex' : 'none';
+  document.getElementById(prefix + 'CustomToField').style.display = isCustom ? 'flex' : 'none';
+  document.getElementById(prefix + 'CustomFrom').value = customFrom;
+  document.getElementById(prefix + 'CustomTo').value = customTo;
+  const flowSelect = document.getElementById(flowSelectIdOverride || (prefix + 'FlowSelect'));
+  if (flowSelect) flowSelect.value = flow;
+}
+
+document.getElementById('refreshBtn').addEventListener('click', () => {
+  const period = document.getElementById('periodSelect').value;
+  const flow = document.getElementById('flowSelect').value;
+  const customFrom = document.getElementById('customFrom').value;
+  const customTo = document.getElementById('customTo').value;
+
+  if (period === 'custom' && !computeRange(period, 'customFrom', 'customTo')) {
+    showGlobalError('Selecciona un rango de fechas "desde" y "hasta" válido antes de actualizar.');
+    return;
+  }
+  showGlobalError(null);
+
+  syncPanelFilters('kpi', period, flow, customFrom, customTo);
+  refreshKpiPanel();
+
+  syncPanelFilters('ts', period, flow, customFrom, customTo);
+  refreshTimeseriesPanel();
+
+  syncPanelFilters('flowCost', period, flow, customFrom, customTo, 'flowCostFlowFilter');
+  refreshFlowCostPanel();
+
+  syncPanelFilters('topUsers', period, flow, customFrom, customTo);
+  refreshTopUsersPanel();
+
+  syncPanelFilters('model', period, flow, customFrom, customTo, 'modelFlowFilter');
+  refreshModelPanel();
+
+  // "Detalle de un usuario" no tiene período propio (la identidad del usuario no depende de
+  // ningún período, ver sección de ese panel); solo se sincroniza su flujo de búsqueda.
+  document.getElementById('userDetailFlowSelect').value = flow;
+  onUserDetailSearchFlowChange();
+});
+
+/**
+ * Conecta el período/flujo LOCAL de un panel: alternar a "Rango personalizado" solo
+ * muestra/oculta sus campos de fecha (sin refrescar todavía); cualquier otro cambio
+ * dispara el refresco de ESE panel únicamente, sin afectar a los demás.
+ */
+function wireLocalFilters(prefix, onChange, flowSelectIdOverride) {
+  const periodSelect = document.getElementById(prefix + 'PeriodSelect');
+  const fromField = prefix + 'CustomFromField';
+  const toField = prefix + 'CustomToField';
+  const fromInput = document.getElementById(prefix + 'CustomFrom');
+  const toInput = document.getElementById(prefix + 'CustomTo');
+
+  periodSelect.addEventListener('change', () => {
+    const isCustom = periodSelect.value === 'custom';
+    document.getElementById(fromField).style.display = isCustom ? 'flex' : 'none';
+    document.getElementById(toField).style.display = isCustom ? 'flex' : 'none';
+    if (!isCustom) onChange();
+  });
+  fromInput.addEventListener('change', () => { if (periodSelect.value === 'custom') onChange(); });
+  toInput.addEventListener('change', () => { if (periodSelect.value === 'custom') onChange(); });
+
+  const flowSelect = document.getElementById(flowSelectIdOverride || (prefix + 'FlowSelect'));
+  if (flowSelect) flowSelect.addEventListener('change', onChange);
+}
+
+wireLocalFilters('kpi', refreshKpiPanel);
+wireLocalFilters('ts', refreshTimeseriesPanel);
+wireLocalFilters('flowCost', refreshFlowCostPanel, 'flowCostFlowFilter');
+wireLocalFilters('topUsers', refreshTopUsersPanel);
+wireLocalFilters('model', refreshModelPanel, 'modelFlowFilter');
+
+/* ============================================================================
+ * PANEL: DETALLE DE UN USUARIO — la búsqueda/identidad del usuario NUNCA depende de ningún
+ * período (ni global ni local): SearchAiUsageUsers siempre se consulta con un rango amplio
+ * fijo (SEARCH_WIDE_RANGE), así ningún usuario queda fuera de la búsqueda por su fecha de
+ * actividad. Solo el flujo filtra los candidatos de búsqueda (CLIENT/PATIENT/ambos). El
+ * período del historial de llamadas vive dentro del detalle ya seleccionado (ver más abajo:
+ * historyRange()/refreshIndicatorsAndHistory()) y nunca se confunde con este.
+ * ========================================================================== */
+const MIN_SEARCH_QUERY_LENGTH = 2;
+let searchDebounceTimer = null;
+// Rango deliberadamente amplio: la búsqueda de usuarios reutiliza SearchAiUsageUsers (que
+// exige from/to) sin depender de ningún período visible en la interfaz.
+const SEARCH_WIDE_RANGE = { from: '2000-01-01T00:00:00.000Z', to: '2100-01-01T00:00:00.000Z' };
+
+document.getElementById('searchQuery').addEventListener('input', (e) => {
+  const query = e.target.value.trim();
+  clearTimeout(searchDebounceTimer);
+  const resultsBox = document.getElementById('userSearchResults');
+
+  if (query.length === 0) {
+    resultsBox.innerHTML = '';
+    return;
+  }
+  if (query.length < MIN_SEARCH_QUERY_LENGTH) {
+    resultsBox.innerHTML = `<div class="state-box">Escribe al menos ${MIN_SEARCH_QUERY_LENGTH} caracteres para buscar.</div>`;
+    return;
+  }
+
+  resultsBox.innerHTML = '<div class="state-box">Buscando…</div>';
+  searchDebounceTimer = setTimeout(() => runUserSearch(query), 300);
+});
+
+async function runUserSearch(query) {
+  const resultsBox = document.getElementById('userSearchResults');
+  const flow = document.getElementById('userDetailFlowSelect').value;
+  try {
+    const matches = await loadSearchUsers(SEARCH_WIDE_RANGE, flow, query);
+    renderSearchResults(matches, query);
+  } catch (err) {
+    console.error('[dashboard-ejecutivo] Error en SearchAiUsageUsers:', err);
+    resultsBox.innerHTML =
+      `<div class="state-box error"><strong>No se pudo buscar</strong><span>${escapeHtml(err.message)}</span>` +
+      `<button class="btn btn-secondary" type="button" id="searchRetryBtn">Reintentar</button></div>`;
+    document.getElementById('searchRetryBtn').addEventListener('click', () => runUserSearch(query));
+  }
+}
+
+/** Se dispara al cambiar el filtro de flujo de búsqueda (local o sincronizado desde el
+ * global): re-ejecuta la búsqueda activa si hay texto escrito. Nunca toca al usuario ya
+ * seleccionado (su identidad/flujo quedaron fijados al elegirlo), ni su historial. */
+function onUserDetailSearchFlowChange() {
+  const query = document.getElementById('searchQuery').value.trim();
+  if (query.length >= MIN_SEARCH_QUERY_LENGTH) runUserSearch(query);
+}
+
+document.getElementById('userDetailFlowSelect').addEventListener('change', onUserDetailSearchFlowChange);
+
+/* ============================================================================
+ * BOTONES DE RECARGA — individuales por panel + recarga global.
+ * Cada botón reutiliza la MISMA función de refresco que ya usan los filtros locales de ese
+ * panel, así que siempre lee los filtros actuales del propio panel (nunca los de otro) y
+ * nunca recarga el documento HTML. Se deshabilita mientras la consulta está en curso para
+ * evitar que un doble clic dispare una solicitud duplicada.
+ * ========================================================================== */
+function wireRefreshButton(buttonId, refreshFn) {
+  const btn = document.getElementById(buttonId);
+  btn.addEventListener('click', async () => {
+    if (btn.disabled) return; // ya hay una recarga de este panel en curso
+    btn.disabled = true;
+    try {
+      await refreshFn();
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+wireRefreshButton('kpiRefreshBtn', refreshKpiPanel);
+wireRefreshButton('tsRefreshBtn', refreshTimeseriesPanel);
+wireRefreshButton('flowCostRefreshBtn', refreshFlowCostPanel);
+wireRefreshButton('topUsersRefreshBtn', refreshTopUsersPanel);
+wireRefreshButton('modelRefreshBtn', refreshModelPanel);
+wireRefreshButton('userDetailRefreshBtn', refreshUserDetailPanel);
+
+/**
+ * Recarga global (icono junto a «Actualizar datos»): vuelve a consultar TODOS los paneles
+ * con los filtros que cada uno tiene aplicados EN ESE MOMENTO — a diferencia de «Actualizar
+ * datos», nunca toca ni sincroniza ningún valor de ningún filtro (ni global ni local).
+ */
+wireRefreshButton('globalReloadBtn', async () => {
+  await Promise.all([
+    refreshKpiPanel(),
+    refreshTimeseriesPanel(),
+    refreshFlowCostPanel(),
+    refreshTopUsersPanel(),
+    refreshModelPanel(),
+    refreshUserDetailPanel(),
+  ]);
+});
+
+/* ============================================================================
+ * INICIALIZACIÓN — carga automática de datos reales, sin selección de modo.
+ * Cada panel ya trae sus valores por defecto (7 días, todos los flujos) iguales
+ * a los de los filtros globales, así que basta con refrescar cada uno una vez.
+ * No hay setInterval ni polling: a partir de aquí, cada panel solo vuelve a
+ * consultarse por una interacción real del usuario (filtro, botón de panel o
+ * botón global) — nunca automáticamente mientras no interactúa.
+ * ========================================================================== */
+refreshKpiPanel();
+refreshTimeseriesPanel();
+refreshFlowCostPanel();
+refreshTopUsersPanel();
+refreshModelPanel();
+
+window.addEventListener('resize', () => {
+  // Redibuja el gráfico de evolución con los últimos puntos ya cargados, sin pedir datos
+  // de nuevo (evita una consulta GraphQL innecesaria en cada resize de ventana).
+  if (state.lastTimeseriesPoints) {
+    renderTimeseriesChart(state.lastTimeseriesPoints, state.lastTimeseriesGranularity);
+  }
+});
+</script>
+</body>
+</html>

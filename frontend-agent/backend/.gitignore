@@ -1,0 +1,4 @@
+# Archivos a ignorar en el backend PHP
+.env
+*.log
+/tmp/

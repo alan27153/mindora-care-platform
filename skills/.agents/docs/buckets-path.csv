@@ -1,0 +1,29 @@
+;;Ruta Minio;;;;;;
+Como se Gestiona;Recurso;Bucket;Folder 1;Folder 2;Folder 3;Ficheros/Folders;Estado;Modulo
+Backend gestiona archivo;uploadContractDocument;document;private;contracts;{yyyy}/{MM}/{contract_id};{object_storage_id}.{extension};Privado;Contratos
+Backend gestiona archivo;downloadContractDocument;document;private;contracts;{yyyy}/{MM}/{contract_id};{object_storage_id}.{extension};Privado;Contratos
+Backend gestiona archivo;deleteContractDocument;document;private;contracts;{yyyy}/{MM}/{contract_id};{object_storage_id}.{extension};Privado;Contratos
+Backend gestiona archivo;uploadContractTemplateVersion;document;private;contract-templates;{yyyy}/{MM}/{contract_template_id};{object_storage_id}.{extension};Privado;Tipos de Contrato
+Backend gestiona archivo;downloadContractTemplateVersion;document;private;contract-templates;{yyyy}/{MM}/{contract_template_id};{object_storage_id}.{extension};Privado;Tipos de Contrato
+Backend gestiona archivo;deleteContractTemplateVersion;document;private;contract-templates;{yyyy}/{MM}/{contract_template_id};{object_storage_id}.{extension};Privado;Tipos de Contrato
+Backend gestiona archivo;uploadProjectDocument;document;private;projects;{yyyy}/{MM}/{project_id};{object_storage_id}.{extension};Privado;Projectos
+Backend gestiona archivo;downloadProjectDocument;document;private;projects;{yyyy}/{MM}/{project_id};{object_storage_id}.{extension};Privado;Projectos
+Backend gestiona archivo;deleteProjectDocument;document;private;projects;{yyyy}/{MM}/{project_id};{object_storage_id}.{extension};Privado;Projectos
+;;;;;;;;
+;;;;;;;;
+;;;;;;;;
+;;;;;;;;
+;;;;;;;;
+;;;;;;;;
+;;;;;;;;
+;;;;;;;;
+;;;;;;;;
+;;;;;;;;
+;;;;;;;;
+;;;;;;;;
+;;;;;;;;
+;;;;;;;;
+;;;;;;;;
+"IMPORTANTE
+No usar Extensiones
+Recordar que debe tener cache de 1 DIA en las implementaciones";;;;;;;;

@@ -1,0 +1,8 @@
+{
+  "name": "installed-nodes",
+  "private": true,
+  "dependencies": {
+    "n8n-nodes-waha": "2024.11.5",
+    "n8n-nodes-globals": "1.1.0"
+  }
+}

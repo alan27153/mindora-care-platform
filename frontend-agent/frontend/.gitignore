@@ -1,0 +1,6 @@
+# Archivos a ignorar en el frontend React
+node_modules
+/dist
+.env
+.env.local
+.env.*.local
